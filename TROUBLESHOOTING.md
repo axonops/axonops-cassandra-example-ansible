@@ -2,6 +2,20 @@
 
 This guide provides solutions for common issues when deploying and operating Cassandra with AxonOps using this Ansible project.
 
+## Setup for Troubleshooting Commands
+
+To simplify the ansible commands in this guide, you can set the inventory as an environment variable:
+
+```bash
+# For production cluster
+export ANSIBLE_INVENTORY=inventory/prod-001/hosts.yml
+
+# For test cluster  
+export ANSIBLE_INVENTORY=inventory/test-001/hosts.yml
+```
+
+Alternatively, use the `-i` flag with each ansible command or use the provided Makefile targets where available.
+
 ## Table of Contents
 
 - [Pre-deployment Issues](#pre-deployment-issues)

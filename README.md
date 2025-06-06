@@ -145,7 +145,13 @@ make install-requirements
 make download-cassandra
 ```
 
-### 7. Deploy Everything
+### 7. Run Pre-flight Checks (Recommended)
+
+```bash
+make pre-flight CLUSTER=prod-001  # or test-001
+```
+
+### 8. Deploy Everything
 
 Deploy to default cluster (prod-001):
 ```bash
@@ -167,16 +173,16 @@ make deploy-axonops CLUSTER=test-001     # Install only AxonOps agents
 
 ### Cluster-Specific Variables
 
-Each cluster has its own configuration in `group_vars/<cluster-name>/all/main.yml`:
+Each cluster has its own configuration in `group_vars/<cluster-name>/all/cassandra.yml`:
 
 ```yaml
-# Example: group_vars/prod-001/all/main.yml
+# Example: group_vars/prod-001/all/cassandra.yml
 cassandra_cluster_name: "Production Cluster 001"
 cassandra_authenticator: PasswordAuthenticator
 cassandra_authorizer: CassandraAuthorizer
 java_heap_size: 8G
 
-# Example: group_vars/test-001/all/main.yml
+# Example: group_vars/test-001/all/cassandra.yml
 cassandra_cluster_name: "Test Cluster 001"
 cassandra_authenticator: AllowAllAuthenticator
 cassandra_authorizer: AllowAllAuthorizer
@@ -205,7 +211,10 @@ cassandra_listen_interface: eth1  # Different network interface
 3. Create group variables:
    ```bash
    mkdir -p group_vars/dev-001/{all,dc1}
-   cp group_vars/test-001/all/main.yml group_vars/dev-001/all/main.yml
+   cp group_vars/test-001/all/cassandra.yml group_vars/dev-001/all/cassandra.yml
+   cp group_vars/test-001/all/java.yml group_vars/dev-001/all/java.yml
+   cp group_vars/test-001/all/linux.yml group_vars/dev-001/all/linux.yml
+   cp group_vars/test-001/all/vault.yml.example group_vars/dev-001/all/vault.yml.example
    # Edit as needed
    ```
 
