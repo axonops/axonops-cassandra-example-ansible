@@ -1,0 +1,61 @@
+
+
+# Ansible
+*.retry
+ansible.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Sensitive data
+group_vars/*/vault.yml
+host_vars/*/vault.yml
+*.pem
+*.key
+*.crt
+
+# Temporary files
+*.tmp
+*.temp
+*.backup
+
+# Claude AI artifacts and internal processing
+.claude/
+.claude-artifacts/
+.claude-cache/
+.claude-session/
+*.claude
+*.claude.md
+*.claude.json
+*.claude.yaml
+*.claude.yml
+claude-*
+CLAUDE.md
+.cline/
+.continue/
+.aider/
+.cursor/
+*_claude_backup*
+*_claude_temp*
+.claude-config/
+.ai-artifacts/
+.ai-cache/
