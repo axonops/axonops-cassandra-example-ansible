@@ -17,3 +17,17 @@ cassandra_concurrent_materialized_view_writes: 32
 # Directories (if different from defaults)
 # cassandra_data_dir: /data/cassandra
 # cassandra_commit_log_dir: /commitlog/cassandra
+
+# Audit logging configuration
+# Enable audit logging for production to track security and schema changes
+cassandra_audit_enabled: true
+cassandra_audit_logger: "BinAuditLogger"  # Binary format for better performance
+cassandra_audit_logs_dir: "/var/log/cassandra/audit"
+# Exclude queries and DML to focus on security/schema changes only
+cassandra_audit_excluded_categories: "QUERY,DML,PREPARE"
+cassandra_audit_roll_cycle: "HOURLY"
+cassandra_audit_max_log_size: 1073741824  # 1 GB per file
+# Enable logrotate for additional protection
+cassandra_audit_logrotate_enabled: true
+cassandra_audit_logrotate_rotate: 7
+cassandra_audit_logrotate_maxsize: "100M"

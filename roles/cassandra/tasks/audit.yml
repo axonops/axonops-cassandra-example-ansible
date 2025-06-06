@@ -1,0 +1,141 @@
+---
+# Audit logging configuration tasks
+
+- name: Create audit log directory
+  file:
+    path: "{{ cassandra_audit_logs_dir }}"
+    state: directory
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0750'
+  when: cassandra_audit_enabled
+
+- name: Create audit log archive script
+  copy:
+    content: |
+      #!/bin/bash
+      # Audit log archive script
+      # Called by Cassandra when rotating audit logs
+      # Usage: archive-audit-log.sh <path-to-log-file>
+      
+      LOG_FILE="$1"
+      ARCHIVE_DIR="{{ cassandra_audit_logs_dir }}/archive"
+      
+      # Create archive directory if it doesn't exist
+      mkdir -p "$ARCHIVE_DIR"
+      
+      # Compress and move to archive
+      if [ -f "$LOG_FILE" ]; then
+        gzip -c "$LOG_FILE" > "$ARCHIVE_DIR/$(basename "$LOG_FILE").gz"
+        if [ $? -eq 0 ]; then
+          rm -f "$LOG_FILE"
+          # Clean up old archives (keep 30 days)
+          find "$ARCHIVE_DIR" -name "*.gz" -mtime +30 -delete
+        fi
+      fi
+    dest: /usr/local/bin/archive-audit-log.sh
+    owner: root
+    group: root
+    mode: '0755'
+  when: 
+    - cassandra_audit_enabled
+    - cassandra_audit_archive_command == ""
+
+- name: Set archive command path
+  set_fact:
+    cassandra_audit_archive_command: "/usr/local/bin/archive-audit-log.sh %path"
+  when:
+    - cassandra_audit_enabled
+    - cassandra_audit_archive_command == ""
+
+- name: Configure logrotate for audit logs
+  template:
+    src: cassandra-audit-logrotate.j2
+    dest: /etc/logrotate.d/cassandra-audit
+    owner: root
+    group: root
+    mode: '0644'
+  when:
+    - cassandra_audit_enabled
+    - cassandra_audit_logrotate_enabled
+
+- name: Create audit log viewer script
+  copy:
+    content: |
+      #!/bin/bash
+      # Cassandra audit log viewer script
+      # Usage: view-audit-logs.sh [options]
+      
+      AUDIT_DIR="{{ cassandra_audit_logs_dir }}"
+      CASSANDRA_HOME="{{ cassandra_home }}"
+      
+      # Use Cassandra's auditlogviewer tool
+      if [ -f "$CASSANDRA_HOME/tools/bin/auditlogviewer" ]; then
+        exec "$CASSANDRA_HOME/tools/bin/auditlogviewer" "$AUDIT_DIR" "$@"
+      else
+        echo "Error: auditlogviewer not found at $CASSANDRA_HOME/tools/bin/auditlogviewer"
+        echo "For BinAuditLogger format, use: java -jar cassandra-tools.jar AuditLogViewer $AUDIT_DIR"
+        exit 1
+      fi
+    dest: /usr/local/bin/view-audit-logs
+    owner: root
+    group: root
+    mode: '0755'
+  when: 
+    - cassandra_audit_enabled
+    - cassandra_audit_logger == "BinAuditLogger"
+
+- name: Create audit log management commands
+  copy:
+    content: |
+      #!/bin/bash
+      # Audit log management commands
+      
+      case "$1" in
+        status)
+          echo "=== Audit Log Status ==="
+          echo "Directory: {{ cassandra_audit_logs_dir }}"
+          echo "Size: $(du -sh {{ cassandra_audit_logs_dir }} 2>/dev/null | cut -f1)"
+          echo "Files: $(find {{ cassandra_audit_logs_dir }} -type f | wc -l)"
+          echo "Latest: $(ls -t {{ cassandra_audit_logs_dir }}/*.log 2>/dev/null | head -1)"
+          ;;
+        clean)
+          echo "Cleaning audit logs older than ${2:-30} days..."
+          find {{ cassandra_audit_logs_dir }} -name "*.log*" -mtime +${2:-30} -delete
+          find {{ cassandra_audit_logs_dir }}/archive -name "*.gz" -mtime +${2:-30} -delete 2>/dev/null
+          ;;
+        disable)
+          echo "To disable audit logging, run:"
+          echo "nodetool disableauditlog"
+          ;;
+        enable)
+          echo "To enable audit logging, run:"
+          echo "nodetool enableauditlog"
+          ;;
+        *)
+          echo "Usage: $0 {status|clean [days]|enable|disable}"
+          exit 1
+          ;;
+      esac
+    dest: /usr/local/bin/cassandra-audit
+    owner: root
+    group: root
+    mode: '0755'
+  when: cassandra_audit_enabled
+
+- name: Display audit configuration info
+  debug:
+    msg: |
+      Audit logging is {{ 'enabled' if cassandra_audit_enabled else 'disabled' }}
+      {% if cassandra_audit_enabled %}
+      - Logger: {{ cassandra_audit_logger }}
+      - Directory: {{ cassandra_audit_logs_dir }}
+      - Excluded categories: {{ cassandra_audit_excluded_categories }}
+      - Roll cycle: {{ cassandra_audit_roll_cycle }}
+      - Max log size: {{ cassandra_audit_max_log_size | human_readable }}
+      
+      Commands available:
+      - view-audit-logs: View audit logs (BinAuditLogger format)
+      - cassandra-audit status: Check audit log status
+      - cassandra-audit clean [days]: Clean old logs
+      {% endif %}

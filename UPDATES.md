@@ -153,6 +153,18 @@ make disaster-recovery CLUSTER=prod-001
 make disaster-recovery CLUSTER=prod-001 -e "dr_mode=rebuild failed_dc=dc2"
 ```
 
+### Audit Logging
+```bash
+# Enable audit logging
+make manage-audit CLUSTER=prod-001 -e action=enable
+
+# Check status
+make manage-audit CLUSTER=prod-001 -e action=status
+
+# View statistics
+make manage-audit CLUSTER=prod-001 -e action=stats
+```
+
 ## Best Practices
 
 1. **Always run pre-flight checks before deployment:**

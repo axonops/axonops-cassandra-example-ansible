@@ -1,0 +1,54 @@
+# {{ ansible_managed }}
+# Logrotate configuration for Cassandra audit logs
+
+{{ cassandra_audit_logs_dir }}/*.log {
+    # Rotation frequency
+    daily
+    
+    # Keep this many rotated files
+    rotate {{ cassandra_audit_logrotate_rotate }}
+    
+    # Rotate when file size exceeds
+    maxsize {{ cassandra_audit_logrotate_maxsize }}
+    
+    # Compress rotated files
+    {% if cassandra_audit_logrotate_compress %}
+    compress
+    delaycompress
+    {% else %}
+    nocompress
+    {% endif %}
+    
+    # Don't rotate if empty
+    notifempty
+    
+    # Create new files with these permissions
+    create 0640 {{ cassandra_user }} {{ cassandra_group }}
+    
+    # Continue if files are missing
+    missingok
+    
+    # Use date as extension
+    dateext
+    dateformat -%Y%m%d-%s
+    
+    # Run once after all logs are rotated
+    sharedscripts
+    
+    # Post-rotation script
+    postrotate
+        # Signal Cassandra to reopen log files if needed
+        # For BinAuditLogger, this is handled internally
+        {% if cassandra_audit_logger == "FileAuditLogger" %}
+        # FileAuditLogger uses SLF4J, may need to signal Cassandra
+        if systemctl is-active --quiet cassandra; then
+            # Send SIGUSR1 to reopen logs if supported
+            systemctl kill -s USR1 cassandra || true
+        fi
+        {% endif %}
+        
+        # Clean up very old audit logs
+        find {{ cassandra_audit_logs_dir }} -name "*.log-*" -mtime +{{ cassandra_audit_max_log_files }} -delete
+        find {{ cassandra_audit_logs_dir }}/archive -name "*.gz" -mtime +{{ cassandra_audit_max_log_files }} -delete 2>/dev/null || true
+    endscript
+}

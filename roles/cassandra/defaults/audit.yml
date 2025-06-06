@@ -1,0 +1,47 @@
+---
+# Audit logging configuration defaults
+
+# Enable audit logging
+cassandra_audit_enabled: false
+
+# Audit logger implementation
+# Options: BinAuditLogger (binary format, better performance)
+#          FileAuditLogger (text format, human readable)
+cassandra_audit_logger: "BinAuditLogger"
+
+# Directory for audit logs
+cassandra_audit_logs_dir: "/var/log/cassandra/audit"
+
+# Categories to include or exclude
+# For security and schema changes only, we exclude queries and DML
+cassandra_audit_excluded_categories: "QUERY,DML,PREPARE"
+# Alternative: use included_categories instead
+# cassandra_audit_included_categories: "DDL,DCL,AUTH,ERROR"
+
+# Keyspaces to exclude from auditing (system keyspaces)
+cassandra_audit_excluded_keyspaces: "system,system_schema,system_virtual_schema,system_auth,system_distributed,system_traces"
+
+# Users to exclude from auditing (e.g., monitoring users)
+cassandra_audit_excluded_users: ""
+
+# Log rotation settings
+cassandra_audit_roll_cycle: "HOURLY"  # Options: MINUTELY, HOURLY, DAILY
+cassandra_audit_max_log_size: 1073741824  # 1 GiB per file (reasonable for security/schema only)
+cassandra_audit_max_archive_retries: 10
+
+# Archive command for log rotation (optional)
+# Example: Move to compressed archive
+cassandra_audit_archive_command: ""  # "/usr/local/bin/archive-audit-log.sh %path"
+
+# Performance settings
+cassandra_audit_block: true  # Block if queue is full (safer for audit compliance)
+cassandra_audit_max_queue_weight: 268435456  # 256 MiB queue size
+
+# Additional options
+cassandra_audit_max_log_files: 30  # Keep 30 hours of hourly logs (~1.25 days)
+
+# Logrotate configuration (for additional rotation)
+cassandra_audit_logrotate_enabled: true
+cassandra_audit_logrotate_rotate: 7  # Keep 7 rotated files
+cassandra_audit_logrotate_maxsize: "100M"  # Rotate if file exceeds 100MB
+cassandra_audit_logrotate_compress: true

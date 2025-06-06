@@ -1899,7 +1899,30 @@ unlogged_batch_across_partitions_warn_threshold: 10
 # Audit logging - Logs every incoming CQL command request, authentication to a node. See the docs
 # on audit_logging for full details about the various configuration options and production tips.
 audit_logging_options:
-  enabled: false
+  enabled: {{ cassandra_audit_enabled | lower }}
+{% if cassandra_audit_enabled %}
+  logger:
+    - class_name: {{ cassandra_audit_logger }}
+  audit_logs_dir: {{ cassandra_audit_logs_dir }}
+  # Exclude high-volume categories (queries, DML, prepare) for security/schema auditing only
+  excluded_categories: {{ cassandra_audit_excluded_categories }}
+  # Exclude system keyspaces from auditing
+  excluded_keyspaces: {{ cassandra_audit_excluded_keyspaces }}
+{% if cassandra_audit_excluded_users %}
+  excluded_users: {{ cassandra_audit_excluded_users }}
+{% endif %}
+  # Log rotation settings
+  roll_cycle: {{ cassandra_audit_roll_cycle }}
+  max_log_size: {{ cassandra_audit_max_log_size }} # {{ cassandra_audit_max_log_size | human_readable }}
+  # Performance settings
+  block: {{ cassandra_audit_block | lower }}
+  max_queue_weight: {{ cassandra_audit_max_queue_weight }} # {{ cassandra_audit_max_queue_weight | human_readable }}
+{% if cassandra_audit_archive_command %}
+  # Archive command for log rotation
+  archive_command: "{{ cassandra_audit_archive_command }}"
+  max_archive_retries: {{ cassandra_audit_max_archive_retries }}
+{% endif %}
+{% else %}
   logger:
     - class_name: BinAuditLogger
   # audit_logs_dir:
@@ -1913,12 +1936,9 @@ audit_logging_options:
   # block: true
   # max_queue_weight: 268435456 # 256 MiB
   # max_log_size: 17179869184 # 16 GiB
-  #
-  ## If archive_command is empty or unset, Cassandra uses a built-in DeletingArchiver that deletes the oldest files if ``max_log_size`` is reached.
-  ## If archive_command is set, Cassandra does not use DeletingArchiver, so it is the responsibility of the script to make any required cleanup.
-  ## Example: "/path/to/script.sh %path" where %path is replaced with the file being rolled.
   # archive_command:
   # max_archive_retries: 10
+{% endif %}
 
 # default options for full query logging - these can be overridden from command line when executing
 # nodetool enablefullquerylog

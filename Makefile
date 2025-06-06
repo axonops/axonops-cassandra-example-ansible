@@ -233,6 +233,14 @@ disaster-recovery: check-inventory ## Run disaster recovery procedures
 		--private-key=$(ANSIBLE_SSH_KEY) \
 		${EXTRA}
 
+.PHONY: manage-audit
+manage-audit: check-inventory ## Manage Cassandra audit logging
+	@echo -e "$(GREEN)Managing audit logging for cluster: $(CLUSTER)$(NC)"
+	@${PIPENVCMD} ansible-playbook -i inventory/$(CLUSTER)/hosts.yml playbooks/operational/manage-audit-logging.yml \
+		-u $(ANSIBLE_USER) \
+		--private-key=$(ANSIBLE_SSH_KEY) \
+		${EXTRA}
+
 .PHONY: download-cassandra
 download-cassandra: ## Download Cassandra tarball
 	@echo -e "$(GREEN)Downloading Cassandra tarball...$(NC)"

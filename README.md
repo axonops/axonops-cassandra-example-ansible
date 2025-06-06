@@ -417,6 +417,24 @@ make monitor-health CLUSTER=prod-001
 make monitor-health CLUSTER=prod-001 -e "thresholds={'heap_usage_percent': 90}"
 ```
 
+### Audit Logging
+Track security and schema changes with audit logging:
+```bash
+# Enable audit logging
+make manage-audit CLUSTER=prod-001 -e action=enable
+
+# Check audit status
+make manage-audit CLUSTER=prod-001 -e action=status
+
+# View audit statistics
+make manage-audit CLUSTER=prod-001 -e action=stats
+
+# Disable audit logging
+make manage-audit CLUSTER=prod-001 -e action=disable
+```
+
+**Note**: Audit logging is configured to track only security-related changes (authentication, authorization) and schema changes (CREATE, ALTER, DROP). Query and DML operations are excluded to minimize performance impact.
+
 ## Troubleshooting
 
 See the comprehensive [TROUBLESHOOTING.md](TROUBLESHOOTING.md) guide for detailed solutions to common issues.

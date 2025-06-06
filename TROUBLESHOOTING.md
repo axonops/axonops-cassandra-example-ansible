@@ -446,6 +446,82 @@ make restore-cluster CLUSTER=prod-001 -e verify_restore=false
 make restore-cluster CLUSTER=prod-001 -e "cassandra_restore_keyspaces=['keyspace1','keyspace2']"
 ```
 
+## Audit Logging Issues
+
+### Issue: Audit logs filling up disk
+
+**Symptoms:**
+- Disk space alerts
+- Audit log directory growing rapidly
+
+**Solution:**
+1. Check audit configuration:
+   ```bash
+   make manage-audit CLUSTER=prod-001 -e action=stats
+   ```
+
+2. Verify excluded categories:
+   ```bash
+   ansible cassandra -m shell -a "grep excluded_categories /etc/cassandra/cassandra.yaml"
+   ```
+
+3. Clean old audit logs:
+   ```bash
+   ansible cassandra -m shell -a "cassandra-audit clean 7" -b  # Keep last 7 days
+   ```
+
+4. Adjust rotation settings in `group_vars/<cluster>/all/cassandra.yml`:
+   ```yaml
+   cassandra_audit_roll_cycle: "HOURLY"
+   cassandra_audit_max_log_size: 536870912  # 512 MB
+   ```
+
+### Issue: Can't read audit logs
+
+**Symptoms:**
+- Binary format not readable
+- `view-audit-logs` command fails
+
+**Solution:**
+1. Use the audit log viewer:
+   ```bash
+   ansible node1 -m shell -a "view-audit-logs --tail 100"
+   ```
+
+2. For specific time range:
+   ```bash
+   ansible node1 -m shell -a "view-audit-logs --from '2024-01-15 10:00:00' --to '2024-01-15 11:00:00'"
+   ```
+
+3. Export to readable format:
+   ```bash
+   ansible node1 -m shell -a "/opt/cassandra/tools/bin/auditlogviewer /var/log/cassandra/audit > /tmp/audit_export.txt"
+   ```
+
+### Issue: Performance impact from audit logging
+
+**Symptoms:**
+- Increased latency
+- High CPU usage
+
+**Solution:**
+1. Verify only security/schema events are logged:
+   ```bash
+   # Should show QUERY,DML,PREPARE in excluded_categories
+   ansible cassandra -m shell -a "nodetool getauditlog"
+   ```
+
+2. Temporarily disable audit logging:
+   ```bash
+   make manage-audit CLUSTER=prod-001 -e action=disable
+   ```
+
+3. Adjust queue size if needed:
+   ```yaml
+   cassandra_audit_max_queue_weight: 536870912  # 512 MB
+   cassandra_audit_block: false  # Don't block if queue full
+   ```
+
 ## Useful Commands
 
 ### Health Checks

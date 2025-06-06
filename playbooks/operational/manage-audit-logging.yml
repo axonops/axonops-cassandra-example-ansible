@@ -1,0 +1,147 @@
+---
+# Playbook to manage Cassandra audit logging
+
+- name: Manage Cassandra audit logging
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  serial: "{{ audit_parallel | default('100%') }}"
+  
+  vars:
+    audit_action: "{{ action | default('status') }}"  # status, enable, disable, configure
+    
+  tasks:
+    - name: Check current audit status
+      shell: |
+        {{ cassandra_home }}/bin/nodetool statusauditlog || echo "Audit logging not available"
+      register: audit_status
+      become_user: "{{ cassandra_user }}"
+      changed_when: false
+
+    - name: Display current status
+      debug:
+        msg: "Current audit status: {{ audit_status.stdout }}"
+      when: audit_action == 'status'
+
+    - name: Enable audit logging
+      when: audit_action == 'enable'
+      block:
+        - name: Ensure audit configuration is set
+          set_fact:
+            cassandra_audit_enabled: true
+
+        - name: Update Cassandra configuration
+          include_role:
+            name: cassandra
+            tasks_from: configure
+
+        - name: Configure audit logging
+          include_role:
+            name: cassandra
+            tasks_from: audit
+
+        - name: Enable audit logging via nodetool
+          shell: |
+            {{ cassandra_home }}/bin/nodetool enableauditlog
+          become_user: "{{ cassandra_user }}"
+          register: enable_result
+
+        - name: Verify audit is enabled
+          shell: |
+            {{ cassandra_home }}/bin/nodetool statusauditlog
+          become_user: "{{ cassandra_user }}"
+          register: verify_enable
+          changed_when: false
+
+        - name: Display result
+          debug:
+            msg: |
+              Audit logging enabled successfully!
+              Status: {{ verify_enable.stdout }}
+              
+              Configuration:
+              - Logger: {{ cassandra_audit_logger | default('BinAuditLogger') }}
+              - Directory: {{ cassandra_audit_logs_dir | default('/var/log/cassandra/audit') }}
+              - Excluded categories: {{ cassandra_audit_excluded_categories | default('QUERY,DML,PREPARE') }}
+              
+              Use 'view-audit-logs' to view audit logs.
+
+    - name: Disable audit logging
+      when: audit_action == 'disable'
+      block:
+        - name: Disable audit logging via nodetool
+          shell: |
+            {{ cassandra_home }}/bin/nodetool disableauditlog
+          become_user: "{{ cassandra_user }}"
+          register: disable_result
+
+        - name: Display result
+          debug:
+            msg: "Audit logging disabled. Existing logs remain in {{ cassandra_audit_logs_dir | default('/var/log/cassandra/audit') }}"
+
+    - name: Configure audit logging
+      when: audit_action == 'configure'
+      block:
+        - name: Update audit configuration
+          include_role:
+            name: cassandra
+            tasks_from: audit
+
+        - name: Restart Cassandra to apply changes
+          systemd:
+            name: cassandra
+            state: restarted
+          when: restart_required | default(false)
+
+        - name: Display configuration
+          debug:
+            msg: |
+              Audit configuration updated.
+              {% if restart_required | default(false) %}
+              Cassandra restarted to apply changes.
+              {% else %}
+              Note: Some changes require a restart to take effect.
+              {% endif %}
+
+    - name: View audit statistics
+      when: audit_action == 'stats'
+      block:
+        - name: Get audit log statistics
+          shell: |
+            echo "=== Audit Log Statistics ==="
+            echo "Directory: {{ cassandra_audit_logs_dir | default('/var/log/cassandra/audit') }}"
+            echo "Total size: $(du -sh {{ cassandra_audit_logs_dir | default('/var/log/cassandra/audit') }} 2>/dev/null | cut -f1)"
+            echo "Number of files: $(find {{ cassandra_audit_logs_dir | default('/var/log/cassandra/audit') }} -type f -name "*.log*" 2>/dev/null | wc -l)"
+            echo "Oldest log: $(find {{ cassandra_audit_logs_dir | default('/var/log/cassandra/audit') }} -type f -name "*.log*" -printf '%T+ %p\n' 2>/dev/null | sort | head -1)"
+            echo "Newest log: $(find {{ cassandra_audit_logs_dir | default('/var/log/cassandra/audit') }} -type f -name "*.log*" -printf '%T+ %p\n' 2>/dev/null | sort | tail -1)"
+            echo ""
+            echo "=== Recent Audit Events (last 10) ==="
+            if command -v view-audit-logs >/dev/null 2>&1; then
+              view-audit-logs --tail 10 2>/dev/null || echo "No events found or unable to read logs"
+            else
+              echo "Audit log viewer not available"
+            fi
+          register: audit_stats
+
+        - name: Display statistics
+          debug:
+            msg: "{{ audit_stats.stdout }}"
+
+  post_tasks:
+    - name: Summary
+      run_once: yes
+      debug:
+        msg: |
+          Audit Logging Management Complete
+          =================================
+          Action: {{ audit_action }}
+          Nodes processed: {{ ansible_play_hosts | length }}
+          
+          Available actions:
+          - make manage-audit CLUSTER=prod-001 -e action=enable    # Enable audit logging
+          - make manage-audit CLUSTER=prod-001 -e action=disable   # Disable audit logging
+          - make manage-audit CLUSTER=prod-001 -e action=status    # Check status
+          - make manage-audit CLUSTER=prod-001 -e action=stats     # View statistics
+          
+          Note: Audit logging configuration focuses on security and schema changes only.
+          Queries and DML operations are excluded to minimize performance impact.

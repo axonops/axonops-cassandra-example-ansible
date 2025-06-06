@@ -16,3 +16,10 @@ cassandra_concurrent_materialized_view_writes: 16
 
 # Fewer tokens for smaller cluster
 cassandra_num_tokens: 8
+
+# Audit logging configuration
+# Disabled by default for test environment
+cassandra_audit_enabled: false
+# When enabled, use same config as production
+# cassandra_audit_logger: "BinAuditLogger"
+# cassandra_audit_excluded_categories: "QUERY,DML,PREPARE"

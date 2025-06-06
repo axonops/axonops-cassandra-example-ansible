@@ -17,6 +17,10 @@
   include_vars: ../defaults/ssl.yml
   tags: [cassandra, always]
 
+- name: Include audit defaults
+  include_vars: ../defaults/audit.yml
+  tags: [cassandra, always]
+
 - name: Include OS-specific variables
   include_vars: "{{ ansible_distribution }}.yml"
   tags: [cassandra, system]
@@ -45,6 +49,10 @@
   include_tasks: ssl.yml
   when: cassandra_ssl_enabled or cassandra_internode_encryption != 'none'
   tags: [cassandra, ssl]
+
+- name: Configure audit logging
+  include_tasks: audit.yml
+  tags: [cassandra, audit]
 
 - name: Setup Cassandra service
   include_tasks: service.yml
