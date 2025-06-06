@@ -1,0 +1,36 @@
+---
+# Cassandra networking configuration defaults
+
+# Network interfaces
+cassandra_listen_interface: null  # Use listen_address instead
+cassandra_listen_address: localhost
+cassandra_listen_interface_prefer_ipv6: false
+cassandra_broadcast_address: null  # commented by default
+cassandra_listen_on_broadcast_address: null  # defaults to false
+
+# RPC/Native transport
+cassandra_rpc_interface: null  # Use rpc_address instead
+cassandra_rpc_address: localhost
+cassandra_rpc_interface_prefer_ipv6: false
+cassandra_broadcast_rpc_address: null  # Must be set if rpc_address is 0.0.0.0
+cassandra_native_transport_address: null  # commented by default
+cassandra_native_transport_interface: null  # commented by default
+cassandra_native_transport_broadcast_address: null  # commented by default
+
+# Ports
+cassandra_storage_port: 7000
+cassandra_ssl_storage_port: 7001
+cassandra_native_transport_port: 9042
+cassandra_native_transport_port_ssl: null  # defaults to 9142
+cassandra_rpc_port: 9160
+
+# Connection limits
+cassandra_native_transport_max_concurrent_connections: null  # defaults to -1 (unlimited)
+cassandra_native_transport_max_concurrent_connections_per_ip: null  # defaults to -1
+
+# RPC settings
+cassandra_start_rpc: false
+cassandra_rpc_keepalive: true
+
+# Event publishing
+cassandra_native_transport_publish_event_type: null  # defaults to topology_and_schema_change

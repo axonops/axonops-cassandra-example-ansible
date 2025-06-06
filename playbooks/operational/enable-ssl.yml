@@ -1,0 +1,135 @@
+---
+# Playbook to enable SSL/TLS encryption for Cassandra cluster
+# This follows a safe migration path to avoid downtime
+
+- name: Enable SSL/TLS encryption for Cassandra
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  serial: 1
+
+  vars_prompt:
+    - name: confirm_ssl_enable
+      prompt: "Are you sure you want to enable SSL/TLS? Type 'yes' to continue"
+      private: no
+
+  pre_tasks:
+    - name: Verify confirmation
+      fail:
+        msg: "SSL enablement cancelled"
+      when: confirm_ssl_enable != 'yes'
+
+    - name: Check current SSL status
+      shell: |
+        grep "internode_encryption:" {{ cassandra_config_dir }}/cassandra.yaml | awk '{print $2}'
+      register: current_encryption
+      changed_when: false
+
+    - name: Display current status
+      debug:
+        msg: "Current internode encryption: {{ current_encryption.stdout }}"
+
+  tasks:
+    - name: Phase 1 - Enable SSL with optional mode
+      block:
+        - name: Update variables for optional SSL
+          set_fact:
+            cassandra_internode_encryption: "{{ ssl_internode_encryption | default('all') }}"
+            cassandra_ssl_enabled: true
+            cassandra_ssl_optional: true
+            cassandra_client_encryption_enabled: "{{ enable_client_encryption | default(false) }}"
+
+        - name: Run SSL configuration tasks
+          include_role:
+            name: cassandra
+            tasks_from: ssl
+
+        - name: Update Cassandra configuration
+          include_role:
+            name: cassandra
+            tasks_from: configure
+
+        - name: Restart Cassandra node
+          systemd:
+            name: cassandra
+            state: restarted
+          
+        - name: Wait for Cassandra to start
+          wait_for:
+            port: 9042
+            host: "{{ cassandra_listen_address }}"
+            delay: 30
+            timeout: 300
+
+        - name: Check node status
+          shell: "{{ cassandra_home }}/bin/nodetool status"
+          register: nodetool_status
+          until: "'UN' in nodetool_status.stdout"
+          retries: 30
+          delay: 10
+
+        - name: Display node status
+          debug:
+            var: nodetool_status.stdout_lines
+
+      tags: [phase1]
+
+- name: Phase 2 - Disable optional mode (enforce SSL)
+  hosts: cassandra
+  become: yes
+  gather_facts: no
+  serial: 1
+
+  tasks:
+    - name: Wait for all nodes to complete Phase 1
+      pause:
+        prompt: |
+          
+          IMPORTANT: Ensure all nodes have completed Phase 1 before continuing!
+          Press Enter to proceed with Phase 2 (enforce SSL)
+
+    - name: Phase 2 - Enforce SSL
+      block:
+        - name: Update variables to enforce SSL
+          set_fact:
+            cassandra_ssl_optional: false
+
+        - name: Update Cassandra configuration
+          include_role:
+            name: cassandra
+            tasks_from: configure
+
+        - name: Restart Cassandra node
+          systemd:
+            name: cassandra
+            state: restarted
+          
+        - name: Wait for Cassandra to start
+          wait_for:
+            port: 9042
+            host: "{{ cassandra_listen_address }}"
+            delay: 30
+            timeout: 300
+
+        - name: Check node status
+          shell: "{{ cassandra_home }}/bin/nodetool status"
+          register: nodetool_status_final
+          until: "'UN' in nodetool_status_final.stdout"
+          retries: 30
+          delay: 10
+
+        - name: Display final node status
+          debug:
+            var: nodetool_status_final.stdout_lines
+
+      tags: [phase2]
+
+  post_tasks:
+    - name: SSL migration complete
+      debug:
+        msg: |
+          SSL/TLS encryption has been successfully enabled!
+          - Internode encryption: {{ cassandra_internode_encryption }}
+          - Client encryption: {{ cassandra_client_encryption_enabled | default(false) }}
+          - Optional mode: {{ cassandra_ssl_optional }}
+      run_once: true

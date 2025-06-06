@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# This file is used by GossipingPropertyFileSnitch to determine
+# datacenter and rack of this node
+
+dc={{ cassandra_dc | default(cassandra_dc_name) }}
+rack={{ cassandra_rack }}
+# Prefer local datacenter for reads
+prefer_local={{ cassandra_prefer_local | default('true') }}

@@ -1,0 +1,59 @@
+---
+# Main playbook for deploying Cassandra and AxonOps agents
+
+- name: Deploy Apache Cassandra 5 and AxonOps agents
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  serial: "{{ cassandra_serial | default('100%') }}"
+  
+  pre_tasks:
+    - name: Verify Ubuntu 24
+      assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_major_version == "24"
+        fail_msg: "This playbook requires Ubuntu 24"
+      tags: always
+
+    - name: Check connectivity
+      ping:
+      tags: always
+
+  roles:
+    - role: cassandra
+      tags: cassandra
+      
+    - role: axonops-agent
+      tags: axonops
+
+  post_tasks:
+    - name: Wait for Cassandra cluster to stabilize
+      wait_for:
+        port: 9042
+        host: "{{ cassandra_listen_address }}"
+        delay: 10
+        timeout: 120
+      tags: [cassandra, verify]
+
+    - name: Verify cluster status
+      command: "{{ cassandra_home }}/bin/nodetool status"
+      register: cluster_status
+      changed_when: false
+      tags: [cassandra, verify]
+
+    - name: Display cluster status
+      debug:
+        var: cluster_status.stdout_lines
+      tags: [cassandra, verify]
+
+    - name: Verify AxonOps agent connection
+      systemd:
+        name: axon-agent
+      register: agent_status
+      tags: [axonops, verify]
+
+    - name: Display AxonOps agent status
+      debug:
+        msg: "AxonOps agent is {{ 'connected' if agent_status.status.ActiveState == 'active' else 'not connected' }}"
+      tags: [axonops, verify]

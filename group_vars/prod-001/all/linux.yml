@@ -1,0 +1,11 @@
+---
+# Production cluster Linux configuration
+
+# NTP servers
+ntp_servers:
+  - ntp1.prod.example.com
+  - ntp2.prod.example.com
+
+# Additional sysctl settings for production
+sysctl_settings_extra:
+  net.ipv4.tcp_slow_start_after_idle: 0

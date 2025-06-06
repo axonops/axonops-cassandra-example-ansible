@@ -1,0 +1,137 @@
+---
+# Rolling restart of Cassandra nodes
+
+- name: Rolling restart of Cassandra cluster
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  serial: 1
+  
+  vars:
+    restart_delay: "{{ restart_delay_seconds | default(30) }}"
+    
+  pre_tasks:
+    - name: Check initial cluster health
+      command: "{{ cassandra_home }}/bin/nodetool status"
+      register: initial_status
+      changed_when: false
+      delegate_to: "{{ item }}"
+      with_items: "{{ ansible_play_hosts[:1] }}"
+      run_once: true
+
+    - name: Verify all nodes are up
+      fail:
+        msg: "Cluster has down nodes. Please fix before rolling restart."
+      when: "'DN' in initial_status.results[0].stdout"
+      run_once: true
+
+    - name: Display initial cluster status
+      debug:
+        var: initial_status.results[0].stdout_lines
+      run_once: true
+
+  tasks:
+    - name: Get current node's DC and rack
+      set_fact:
+        current_dc: "{{ cassandra_dc }}"
+        current_rack: "{{ cassandra_rack }}"
+
+    - name: Announce node restart
+      debug:
+        msg: "Restarting {{ inventory_hostname }} in DC {{ current_dc }}, Rack {{ current_rack }}"
+
+    - name: Drain node before restart
+      command: "{{ cassandra_home }}/bin/nodetool drain"
+      register: drain_result
+
+    - name: Stop Cassandra service
+      systemd:
+        name: cassandra
+        state: stopped
+      register: stop_result
+
+    - name: Wait for service to stop completely
+      wait_for:
+        port: 9042
+        host: "{{ cassandra_listen_address }}"
+        state: stopped
+        timeout: 60
+
+    - name: Start Cassandra service
+      systemd:
+        name: cassandra
+        state: started
+
+    - name: Wait for Cassandra to start listening
+      wait_for:
+        port: 9042
+        host: "{{ cassandra_listen_address }}"
+        delay: 10
+        timeout: 300
+
+    - name: Wait for JMX to be available
+      wait_for:
+        port: 7199
+        host: localhost
+        delay: 5
+        timeout: 120
+
+    - name: Check node is up via nodetool
+      command: "{{ cassandra_home }}/bin/nodetool info"
+      register: node_info
+      until: 
+        - "'Gossip active          : true' in node_info.stdout"
+        - "'Native Transport active: true' in node_info.stdout"
+      retries: 30
+      delay: 10
+
+    - name: Verify node rejoined cluster
+      command: "{{ cassandra_home }}/bin/nodetool status"
+      register: status_after
+      changed_when: false
+      until: "'UN' in status_after.stdout and inventory_hostname in status_after.stdout"
+      retries: 30
+      delay: 10
+
+    - name: Check for any down nodes in cluster
+      shell: |
+        {{ cassandra_home }}/bin/nodetool status | grep -E "^D[NLJM]" || echo "All nodes are up"
+      register: down_check
+      changed_when: false
+
+    - name: Fail if any nodes are down
+      fail:
+        msg: "Found down nodes after restart: {{ down_check.stdout }}"
+      when: "'DN' in down_check.stdout or 'DL' in down_check.stdout or 'DJ' in down_check.stdout or 'DM' in down_check.stdout"
+
+    - name: Display current cluster status
+      debug:
+        var: status_after.stdout_lines
+
+    - name: Wait before next node restart
+      pause:
+        seconds: "{{ restart_delay }}"
+        prompt: "Waiting {{ restart_delay }} seconds before processing next node..."
+      when: inventory_hostname != ansible_play_hosts[-1]
+
+  post_tasks:
+    - name: Final cluster status check
+      command: "{{ cassandra_home }}/bin/nodetool status"
+      register: final_status
+      changed_when: false
+      run_once: true
+
+    - name: Display final cluster status
+      debug:
+        var: final_status.stdout_lines
+      run_once: true
+
+    - name: Verify all nodes are up
+      assert:
+        that:
+          - "'DN' not in final_status.stdout"
+          - "'DL' not in final_status.stdout"
+          - "'DJ' not in final_status.stdout"
+          - "'DM' not in final_status.stdout"
+        fail_msg: "Some nodes are still down after rolling restart"
+      run_once: true

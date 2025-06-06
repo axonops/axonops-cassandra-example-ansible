@@ -1,0 +1,30 @@
+---
+# AxonOps agent configuration tasks
+
+- name: Configure AxonOps agent
+  template:
+    src: axon-agent.yml.j2
+    dest: /etc/axonops/axon-agent.yml
+    owner: axonops
+    group: axonops
+    mode: '0640'
+    backup: yes
+  notify: restart axonops-agent
+
+- name: Configure Cassandra JVM for AxonOps agent
+  lineinfile:
+    path: "{{ cassandra_home }}/conf/jvm17-server.options"
+    line: "-javaagent:/usr/share/axonops/axon-cassandra{{ cassandra_version | regex_replace('(\\d+\\.\\d+).*', '\\1') }}-agent.jar"
+    insertafter: EOF
+    state: present
+  notify: restart cassandra
+
+- name: Set AxonOps environment variables for Cassandra
+  lineinfile:
+    path: "{{ cassandra_home }}/conf/cassandra-env.sh"
+    line: "{{ item }}"
+    insertafter: EOF
+    state: present
+  loop:
+    - 'export AXON_AGENT_CONFIG="/etc/axonops/axon-agent.yml"'
+  notify: restart cassandra

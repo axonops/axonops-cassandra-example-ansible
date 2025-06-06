@@ -1,0 +1,43 @@
+---
+# Java installation tasks
+
+- name: Add Azul Zulu repository key
+  apt_key:
+    url: "{{ java_apt_key_url }}"
+    state: present
+  when: ansible_os_family == "Debian"
+
+- name: Add Azul Zulu repository
+  apt_repository:
+    repo: "{{ java_apt_repository }}"
+    state: present
+    update_cache: yes
+  when: ansible_os_family == "Debian"
+
+- name: Install Azul Zulu JDK {{ java_version }}
+  package:
+    name: "{{ java_package_name }}"
+    state: present
+
+- name: Set Java {{ java_version }} as default
+  alternatives:
+    name: java
+    path: "/usr/lib/jvm/zulu{{ java_version }}/bin/java"
+    priority: 2000
+  when: ansible_os_family == "Debian"
+
+- name: Set javac {{ java_version }} as default
+  alternatives:
+    name: javac
+    path: "/usr/lib/jvm/zulu{{ java_version }}/bin/javac"
+    priority: 2000
+  when: ansible_os_family == "Debian"
+
+- name: Verify Java installation
+  command: java -version
+  register: java_version_output
+  changed_when: false
+
+- name: Display Java version
+  debug:
+    msg: "Java version: {{ java_version_output.stderr }}"

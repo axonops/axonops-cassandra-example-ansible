@@ -1,0 +1,147 @@
+---
+# Validate complete setup
+
+- name: Validate Cassandra and AxonOps setup
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: System validation
+      block:
+        - name: Verify Ubuntu version
+          assert:
+            that:
+              - ansible_distribution == "Ubuntu"
+              - ansible_distribution_major_version == "24"
+            fail_msg: "Expected Ubuntu 24, found {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+        - name: Check Java version
+          command: java -version
+          register: java_version
+          changed_when: false
+
+        - name: Verify Azul Java 17
+          assert:
+            that:
+              - "'Zulu17' in java_version.stderr or 'zulu-17' in java_version.stderr"
+            fail_msg: "Azul Java 17 not found"
+
+    - name: Cassandra validation
+      block:
+        - name: Check Cassandra directories
+          stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ cassandra_home }}"
+            - "{{ cassandra_data_dir }}"
+            - "{{ cassandra_log_dir }}"
+            - "{{ cassandra_commit_log_dir }}"
+          register: cassandra_dirs
+
+        - name: Verify all directories exist
+          assert:
+            that:
+              - item.stat.exists
+              - item.stat.isdir
+            fail_msg: "Directory {{ item.item }} does not exist"
+          loop: "{{ cassandra_dirs.results }}"
+
+        - name: Check Cassandra service
+          systemd:
+            name: cassandra
+          register: cassandra_service
+
+        - name: Verify Cassandra is running
+          assert:
+            that:
+              - cassandra_service.status.ActiveState == "active"
+            fail_msg: "Cassandra service is not active"
+
+        - name: Check cluster connectivity
+          command: "{{ cassandra_home }}/bin/nodetool status"
+          register: cluster_status
+          changed_when: false
+
+        - name: Verify node is in cluster
+          assert:
+            that:
+              - "'UN' in cluster_status.stdout"
+              - inventory_hostname in cluster_status.stdout or cassandra_listen_address in cluster_status.stdout
+            fail_msg: "Node is not properly joined to cluster"
+
+    - name: AxonOps validation
+      block:
+        - name: Check AxonOps agent package
+          shell: dpkg -l | grep axon-cassandra.*-agent
+          register: agent_package
+          changed_when: false
+
+        - name: Verify agent package installed
+          assert:
+            that:
+              - agent_package.rc == 0
+            fail_msg: "AxonOps agent package not installed"
+
+        - name: Check agent configuration
+          stat:
+            path: /etc/axonops/axon-agent.yml
+          register: agent_config
+
+        - name: Verify agent configuration exists
+          assert:
+            that:
+              - agent_config.stat.exists
+            fail_msg: "AxonOps agent configuration missing"
+
+        - name: Check agent service
+          systemd:
+            name: axon-agent
+          register: agent_service
+
+        - name: Verify agent is running
+          assert:
+            that:
+              - agent_service.status.ActiveState == "active"
+            fail_msg: "AxonOps agent service is not active"
+
+    - name: Network validation
+      block:
+        - name: Test AxonOps connectivity
+          wait_for:
+            host: "{{ axonops_server_host }}"
+            port: 443
+            timeout: 10
+          register: axonops_connection
+
+        - name: Verify AxonOps connectivity
+          assert:
+            that:
+              - axonops_connection is succeeded
+            fail_msg: "Cannot connect to AxonOps SaaS"
+
+    - name: Generate validation report
+      set_fact:
+        validation_report:
+          hostname: "{{ inventory_hostname }}"
+          os: "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+          java: "{{ 'Azul Java 17' if 'Zulu17' in java_version.stderr else 'Unknown' }}"
+          cassandra_version: "{{ cassandra_version }}"
+          cassandra_status: "{{ cassandra_service.status.ActiveState }}"
+          cluster_state: "{{ 'Joined' if 'UN' in cluster_status.stdout else 'Not joined' }}"
+          axonops_agent: "{{ agent_service.status.ActiveState }}"
+          axonops_connectivity: "{{ 'OK' if axonops_connection is succeeded else 'Failed' }}"
+
+    - name: Display validation report
+      debug:
+        msg: |
+          === Validation Report for {{ validation_report.hostname }} ===
+          OS: {{ validation_report.os }}
+          Java: {{ validation_report.java }}
+          Cassandra Version: {{ validation_report.cassandra_version }}
+          Cassandra Service: {{ validation_report.cassandra_status }}
+          Cluster State: {{ validation_report.cluster_state }}
+          AxonOps Agent: {{ validation_report.axonops_agent }}
+          AxonOps Connectivity: {{ validation_report.axonops_connectivity }}
+          
+          Overall Status: {{ 'PASS' if validation_report.cassandra_status == 'active' and validation_report.axonops_agent == 'active' and validation_report.cluster_state == 'Joined' else 'FAIL' }}

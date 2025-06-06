@@ -1,0 +1,26 @@
+---
+# Cassandra directory configuration defaults
+
+# Data directories
+cassandra_data_dir: /var/lib/cassandra
+cassandra_data_file_directories:
+  - "{{ cassandra_data_dir }}/data"
+cassandra_local_system_data_file_directory: null  # commented by default
+
+# Commit log
+cassandra_commit_log_dir: /var/lib/cassandra/commitlog
+
+# Caches
+cassandra_saved_caches_dir: /var/lib/cassandra/saved_caches
+
+# Hints
+cassandra_hints_dir: /var/lib/cassandra/hints
+
+# Logs
+cassandra_log_dir: /var/log/cassandra
+
+# CDC
+cassandra_cdc_raw_directory: null  # commented by default
+
+# Heap dumps
+cassandra_heap_dump_path: null  # commented by default

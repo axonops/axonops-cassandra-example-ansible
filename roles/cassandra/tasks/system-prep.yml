@@ -1,0 +1,116 @@
+---
+# System preparation tasks
+
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  when: ansible_os_family == "Debian"
+
+- name: Install required packages
+  package:
+    name: "{{ required_packages }}"
+    state: present
+
+- name: Merge sysctl settings
+  set_fact:
+    merged_sysctl_settings: "{{ sysctl_settings | combine(sysctl_settings_extra | default({})) }}"
+
+- name: Configure sysctl settings
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+    sysctl_file: /etc/sysctl.d/99-cassandra.conf
+  loop: "{{ merged_sysctl_settings | dict2items }}"
+
+- name: Disable swap
+  command: swapoff -a
+  when: ansible_swaptotal_mb > 0
+
+- name: Remove swap from fstab
+  lineinfile:
+    path: /etc/fstab
+    regexp: '^\s*[^#]\S+\s+\S+\s+swap\s+'
+    state: absent
+    backup: yes
+
+- name: Create rc.local file if it doesn't exist
+  file:
+    path: /etc/rc.local
+    state: touch
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Add shebang to rc.local
+  lineinfile:
+    path: /etc/rc.local
+    line: '#!/bin/bash'
+    insertbefore: BOF
+    create: yes
+
+- name: Configure SSD optimizations in rc.local
+  blockinfile:
+    path: /etc/rc.local
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - SSD Optimizations"
+    block: |
+      # SSD optimizations for {{ ssd_device | default('/dev/nvme1n1') }}
+      if [ -b {{ ssd_device | default('/dev/nvme1n1') }} ]; then
+        echo deadline > /sys/block/{{ ssd_device | default('/dev/nvme1n1') | basename }}/queue/scheduler
+        echo 0 > /sys/class/block/{{ ssd_device | default('/dev/nvme1n1') | basename }}/queue/rotational
+        echo 8 > /sys/class/block/{{ ssd_device | default('/dev/nvme1n1') | basename }}/queue/read_ahead_kb
+      fi
+      
+      # Disable zone_reclaim_mode on NUMA systems
+      echo 0 > /proc/sys/vm/zone_reclaim_mode
+      
+      # Disable transparent huge pages
+      echo never > /sys/kernel/mm/transparent_hugepage/defrag
+      
+      touch /var/lock/subsys/local
+  when: ssd_device is defined
+
+- name: Configure CPU governor to performance mode
+  copy:
+    content: |
+      GOVERNOR="performance"
+    dest: /etc/default/cpufrequtils
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Set CPU governor to performance mode immediately
+  shell: |
+    for cpu in /sys/devices/system/cpu/cpu[0-9]*; do
+      if [ -e "$cpu/cpufreq/scaling_governor" ]; then
+        echo performance > "$cpu/cpufreq/scaling_governor"
+      fi
+    done
+  ignore_errors: yes
+
+- name: Configure chrony
+  template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: yes
+  notify: restart chrony
+
+- name: Enable and start chrony
+  systemd:
+    name: chrony
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Create limits configuration for Cassandra
+  template:
+    src: cassandra-limits.conf.j2
+    dest: /etc/security/limits.d/cassandra.conf
+    owner: root
+    group: root
+    mode: '0644'

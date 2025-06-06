@@ -1,0 +1,27 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Apache Cassandra
+After=network.target
+
+[Service]
+Type=forking
+User={{ cassandra_user }}
+Group={{ cassandra_group }}
+Environment="CASSANDRA_HOME={{ cassandra_home }}"
+ExecStart={{ cassandra_home }}/bin/cassandra-startup.sh
+ExecStop={{ cassandra_home }}/bin/nodetool stopdaemon
+PIDFile={{ cassandra_home }}/cassandra.pid
+StandardOutput=journal
+StandardError=journal
+Restart=on-failure
+RestartSec=20s
+LimitNOFILE=100000
+LimitMEMLOCK=infinity
+LimitNPROC=32768
+LimitAS=infinity
+
+# Set proper umask
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

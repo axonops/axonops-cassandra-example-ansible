@@ -1,0 +1,52 @@
+---
+# Linux system configuration
+
+# System packages
+required_packages:
+  - python3
+  - python3-apt
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - chrony
+  - sysstat
+  - net-tools
+  - iotop
+  - dstat
+  - htop
+
+# Kernel tuning settings
+sysctl_settings:
+  net.ipv4.tcp_keepalive_time: 60
+  net.ipv4.tcp_keepalive_probes: 3
+  net.ipv4.tcp_keepalive_intvl: 10
+  net.core.rmem_max: 16777216
+  net.core.wmem_max: 16777216
+  net.core.rmem_default: 16777216
+  net.core.wmem_default: 16777216
+  net.core.optmem_max: 40960
+  net.ipv4.tcp_rmem: "4096 87380 16777216"
+  net.ipv4.tcp_wmem: "4096 65536 16777216"
+  vm.max_map_count: 1048575
+  vm.swappiness: 1
+
+# Resource limits
+cassandra_limits:
+  memlock: unlimited
+  nofile: 100000
+  nproc: 32768
+  as: unlimited
+
+# CPU governor
+cpu_governor: performance
+
+# Disable swap
+disable_swap: true
+
+# Transparent huge pages
+disable_thp: true
+
+# Zone reclaim mode
+disable_zone_reclaim: true

@@ -1,0 +1,119 @@
+---
+# Run nodetool repair on all nodes sequentially
+
+- name: Sequential repair of Cassandra cluster
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  serial: 1
+  
+  vars:
+    repair_options: "-pr -full"
+    repair_parallelism: "{{ repair_parallelism | default(1) }}"
+    
+  pre_tasks:
+    - name: Check cluster health before repair
+      command: "{{ cassandra_home }}/bin/nodetool status"
+      register: pre_repair_status
+      changed_when: false
+      run_once: true
+
+    - name: Verify all nodes are up
+      fail:
+        msg: "Cluster has down nodes. Please fix before running repair."
+      when: "'DN' in pre_repair_status.stdout"
+      run_once: true
+
+    - name: Display cluster status before repair
+      debug:
+        var: pre_repair_status.stdout_lines
+      run_once: true
+
+  tasks:
+    - name: Get node information
+      command: "{{ cassandra_home }}/bin/nodetool info"
+      register: node_info
+      changed_when: false
+
+    - name: Set repair timestamp
+      set_fact:
+        repair_start: "{{ ansible_date_time.epoch }}"
+
+    - name: Announce repair start
+      debug:
+        msg: |
+          Starting repair on {{ inventory_hostname }}
+          DC: {{ cassandra_dc }}
+          Rack: {{ cassandra_rack }}
+          Options: {{ repair_options }}
+
+    - name: Run nodetool repair
+      command: "{{ cassandra_home }}/bin/nodetool repair {{ repair_options }}"
+      register: repair_result
+      async: 7200  # 2 hours timeout
+      poll: 60     # Check every minute
+
+    - name: Calculate repair duration
+      set_fact:
+        repair_duration: "{{ (ansible_date_time.epoch | int - repair_start | int) }}"
+
+    - name: Display repair result
+      debug:
+        msg: |
+          Repair completed on {{ inventory_hostname }}
+          Duration: {{ repair_duration }} seconds ({{ (repair_duration | int / 60) | round(2) }} minutes)
+          Exit code: {{ repair_result.rc }}
+
+    - name: Check for repair errors
+      debug:
+        msg: "Repair output:"
+        var: repair_result.stdout_lines
+      when: repair_result.rc != 0
+
+    - name: Verify node is still healthy
+      command: "{{ cassandra_home }}/bin/nodetool status"
+      register: post_node_status
+      changed_when: false
+
+    - name: Ensure node is still up
+      assert:
+        that:
+          - "'UN' in post_node_status.stdout and inventory_hostname in post_node_status.stdout"
+        fail_msg: "Node {{ inventory_hostname }} is not in UN state after repair"
+
+    - name: Get repair stats
+      command: "{{ cassandra_home }}/bin/nodetool netstats"
+      register: netstats
+      changed_when: false
+
+    - name: Display pending repairs
+      debug:
+        msg: "Network stats:"
+        var: netstats.stdout_lines
+      when: "'Pending' in netstats.stdout"
+
+    - name: Cool down period between repairs
+      pause:
+        seconds: 60
+        prompt: "Waiting 60 seconds before next node repair..."
+      when: inventory_hostname != ansible_play_hosts[-1]
+
+  post_tasks:
+    - name: Final cluster status check
+      command: "{{ cassandra_home }}/bin/nodetool status"
+      register: final_status
+      changed_when: false
+      run_once: true
+
+    - name: Display final cluster status
+      debug:
+        var: final_status.stdout_lines
+      run_once: true
+
+    - name: Generate repair summary
+      debug:
+        msg: |
+          Repair Summary:
+          - Total nodes repaired: {{ ansible_play_hosts | length }}
+          - All repairs completed successfully
+      run_once: true

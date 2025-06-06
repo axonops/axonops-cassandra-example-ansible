@@ -1,0 +1,192 @@
+---
+# Playbook to backup Cassandra cluster data
+
+- name: Backup Cassandra cluster
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    backup_base_dir: "{{ cassandra_backup_dir | default('/var/backups/cassandra') }}"
+    backup_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}"
+    backup_dir: "{{ backup_base_dir }}/{{ backup_timestamp }}"
+    backup_retention_days: "{{ cassandra_backup_retention_days | default(7) }}"
+    backup_keyspaces: "{{ cassandra_backup_keyspaces | default([]) }}"
+    backup_type: "{{ snapshot_type | default('full') }}"  # full or incremental
+
+  tasks:
+    - name: Create backup directory structure
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ cassandra_user }}"
+        group: "{{ cassandra_group }}"
+        mode: '0750'
+      loop:
+        - "{{ backup_base_dir }}"
+        - "{{ backup_dir }}"
+        - "{{ backup_dir }}/snapshots"
+        - "{{ backup_dir }}/schema"
+        - "{{ backup_dir }}/tokens"
+
+    - name: Check Cassandra status
+      shell: "{{ cassandra_home }}/bin/nodetool status"
+      register: nodetool_status
+      changed_when: false
+
+    - name: Verify node is up
+      fail:
+        msg: "Node is not in UN state"
+      when: "'UN' not in nodetool_status.stdout"
+
+    - name: Get ring tokens
+      shell: "{{ cassandra_home }}/bin/nodetool ring"
+      register: ring_tokens
+      changed_when: false
+
+    - name: Save ring tokens
+      copy:
+        content: "{{ ring_tokens.stdout }}"
+        dest: "{{ backup_dir }}/tokens/ring_tokens.txt"
+        owner: "{{ cassandra_user }}"
+        group: "{{ cassandra_group }}"
+        mode: '0640'
+
+    - name: Get keyspace list
+      shell: |
+        {{ cassandra_home }}/bin/cqlsh {{ cassandra_listen_address }} \
+        -e "SELECT keyspace_name FROM system_schema.keyspaces WHERE keyspace_name NOT LIKE 'system%'" \
+        | grep -v keyspace_name | grep -v "^$" | grep -v "rows)"
+      register: user_keyspaces
+      changed_when: false
+      when: backup_keyspaces | length == 0
+
+    - name: Set keyspaces to backup
+      set_fact:
+        keyspaces_to_backup: "{{ backup_keyspaces if backup_keyspaces | length > 0 else user_keyspaces.stdout_lines }}"
+
+    - name: Export keyspace schemas
+      shell: |
+        {{ cassandra_home }}/bin/cqlsh {{ cassandra_listen_address }} \
+        -e "DESC KEYSPACE {{ item }}" > {{ backup_dir }}/schema/{{ item }}_schema.cql
+      loop: "{{ keyspaces_to_backup }}"
+      become_user: "{{ cassandra_user }}"
+
+    - name: Clear previous snapshots
+      shell: "{{ cassandra_home }}/bin/nodetool clearsnapshot -t backup_{{ backup_timestamp }}"
+      ignore_errors: yes
+
+    - name: Create snapshots
+      block:
+        - name: Create full snapshot
+          shell: |
+            {{ cassandra_home }}/bin/nodetool snapshot \
+            -t backup_{{ backup_timestamp }} \
+            {% if backup_keyspaces | length > 0 %}{{ backup_keyspaces | join(' ') }}{% endif %}
+          when: backup_type == 'full'
+
+        - name: Flush memtables for incremental backup
+          shell: "{{ cassandra_home }}/bin/nodetool flush"
+          when: backup_type == 'incremental'
+
+      become_user: "{{ cassandra_user }}"
+
+    - name: Find snapshot files
+      find:
+        paths: "{{ cassandra_data_dir }}/data"
+        patterns: "*"
+        file_type: any
+        recurse: yes
+        contains: "backup_{{ backup_timestamp }}"
+      register: snapshot_files
+      when: backup_type == 'full'
+
+    - name: Create snapshot archive
+      archive:
+        path: "{{ snapshot_files.files | map(attribute='path') | list }}"
+        dest: "{{ backup_dir }}/snapshots/{{ inventory_hostname }}_snapshot.tar.gz"
+        format: gz
+        owner: "{{ cassandra_user }}"
+        group: "{{ cassandra_group }}"
+        mode: '0640'
+      when: 
+        - backup_type == 'full'
+        - snapshot_files.files | length > 0
+
+    - name: Handle incremental backups
+      block:
+        - name: Find incremental backup files
+          find:
+            paths: "{{ cassandra_data_dir }}/data"
+            patterns: "*"
+            file_type: file
+            recurse: yes
+            paths: "*/backups/*"
+          register: incremental_files
+
+        - name: Create incremental backup archive
+          archive:
+            path: "{{ incremental_files.files | map(attribute='path') | list }}"
+            dest: "{{ backup_dir }}/snapshots/{{ inventory_hostname }}_incremental.tar.gz"
+            format: gz
+            owner: "{{ cassandra_user }}"
+            group: "{{ cassandra_group }}"
+            mode: '0640'
+          when: incremental_files.files | length > 0
+
+      when: backup_type == 'incremental'
+
+    - name: Create backup metadata
+      copy:
+        content: |
+          backup_timestamp: {{ backup_timestamp }}
+          backup_type: {{ backup_type }}
+          cassandra_version: {{ cassandra_version }}
+          node: {{ inventory_hostname }}
+          datacenter: {{ cassandra_dc }}
+          rack: {{ cassandra_rack }}
+          keyspaces: {{ keyspaces_to_backup | join(',') }}
+          data_dir: {{ cassandra_data_dir }}
+          backup_size: {{ snapshot_files.files | map(attribute='size') | sum | default(0) }}
+        dest: "{{ backup_dir }}/metadata.yml"
+        owner: "{{ cassandra_user }}"
+        group: "{{ cassandra_group }}"
+        mode: '0640'
+
+    - name: Clean up snapshot
+      shell: "{{ cassandra_home }}/bin/nodetool clearsnapshot -t backup_{{ backup_timestamp }}"
+      become_user: "{{ cassandra_user }}"
+      when: backup_type == 'full'
+
+    - name: Remove old backups
+      find:
+        paths: "{{ backup_base_dir }}"
+        age: "{{ backup_retention_days }}d"
+        file_type: directory
+        recurse: no
+      register: old_backups
+
+    - name: Delete old backups
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_backups.files }}"
+      when: old_backups.files | length > 0
+
+    - name: Generate backup report
+      template:
+        src: backup_report.j2
+        dest: "{{ backup_dir }}/backup_report.txt"
+        owner: "{{ cassandra_user }}"
+        group: "{{ cassandra_group }}"
+        mode: '0640'
+
+  post_tasks:
+    - name: Display backup summary
+      debug:
+        msg: |
+          Backup completed successfully!
+          - Backup location: {{ backup_dir }}
+          - Backup type: {{ backup_type }}
+          - Keyspaces backed up: {{ keyspaces_to_backup | join(', ') }}
+          - Retention: {{ backup_retention_days }} days

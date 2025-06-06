@@ -1,0 +1,26 @@
+---
+# Host-specific configuration for cassandra-dc1-rack1-node1
+
+# Network configuration
+cassandra_listen_address: "{{ ansible_default_ipv4.address }}"
+cassandra_rpc_address: "{{ ansible_default_ipv4.address }}"
+cassandra_broadcast_rpc_address: "{{ ansible_default_ipv4.address }}"
+cassandra_listen_interface: eth0
+
+# Storage configuration
+ssd_device: /dev/nvme1n1
+
+# Cassandra topology
+cassandra_dc: dc1
+cassandra_rack: rack1
+
+# Override data directories if needed
+# cassandra_data_dir: /data/cassandra
+# cassandra_commit_log_dir: /commitlog/cassandra
+
+# Seeds list (calculated from inventory in production)
+cassandra_seeds_list:
+  - cassandra-dc1-rack1-node1
+  - cassandra-dc1-rack2-node1
+  - cassandra-dc2-rack1-node1
+  - cassandra-dc2-rack2-node1

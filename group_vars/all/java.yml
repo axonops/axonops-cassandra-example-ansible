@@ -1,0 +1,24 @@
+---
+# Java configuration
+
+# Java vendor and version
+java_vendor: azul
+java_version: 17
+
+# Java installation
+java_apt_repository: "deb [arch=amd64] https://repos.azul.com/zulu/deb stable main"
+java_apt_key_url: "https://repos.azul.com/azul-repo.key"
+java_package_name: "zulu{{ java_version }}-jdk"
+
+# JVM heap settings (can be overridden per cluster/host)
+java_heap_size: 8G
+java_new_size: 2G
+
+# G1GC settings
+java_gc_g1_heap_region_size: 16m
+java_gc_max_tenuring_threshold: 2
+java_gc_g1_new_size_percent: 50
+
+# Other JVM settings
+java_enable_assertions: false
+java_thread_stack_size: 256k

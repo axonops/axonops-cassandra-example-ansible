@@ -1,0 +1,51 @@
+---
+# Main tasks for Cassandra installation
+
+- name: Include all Cassandra configuration defaults
+  include_vars: ../defaults/cassandra-all.yml
+  tags: [cassandra, always]
+
+- name: Include directory defaults
+  include_vars: ../defaults/directories.yml
+  tags: [cassandra, always]
+
+- name: Include networking defaults
+  include_vars: ../defaults/networking.yml
+  tags: [cassandra, always]
+
+- name: Include SSL defaults
+  include_vars: ../defaults/ssl.yml
+  tags: [cassandra, always]
+
+- name: Include OS-specific variables
+  include_vars: "{{ ansible_distribution }}.yml"
+  tags: [cassandra, system]
+
+- name: System preparation
+  include_tasks: system-prep.yml
+  tags: [cassandra, system]
+
+- name: Install Java
+  include_tasks: java.yml
+  tags: [cassandra, java]
+
+- name: Create Cassandra user and directories
+  include_tasks: user-dirs.yml
+  tags: [cassandra, setup]
+
+- name: Install Cassandra
+  include_tasks: install.yml
+  tags: [cassandra, install]
+
+- name: Configure Cassandra
+  include_tasks: configure.yml
+  tags: [cassandra, configure]
+
+- name: Configure SSL/TLS if enabled
+  include_tasks: ssl.yml
+  when: cassandra_ssl_enabled or cassandra_internode_encryption != 'none'
+  tags: [cassandra, ssl]
+
+- name: Setup Cassandra service
+  include_tasks: service.yml
+  tags: [cassandra, service]

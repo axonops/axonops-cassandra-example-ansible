@@ -1,0 +1,21 @@
+---
+# Ubuntu-specific variables
+
+required_packages:
+  - python3
+  - python3-apt
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - chrony
+  - sysstat
+  - net-tools
+  - iotop
+  - dstat
+  - htop
+
+java_apt_repository: "deb [arch=amd64] https://repos.azul.com/zulu/deb stable main"
+java_apt_key_url: "https://repos.azul.com/azul-repo.key"
+java_package_name: "zulu{{ java_version }}-jdk"

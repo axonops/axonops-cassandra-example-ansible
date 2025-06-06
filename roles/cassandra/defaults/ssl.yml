@@ -1,0 +1,53 @@
+---
+# SSL/TLS configuration defaults
+
+# Enable SSL/TLS
+cassandra_ssl_enabled: false
+
+# Internode encryption options: none, dc, rack, all
+cassandra_internode_encryption: none
+
+# Client encryption
+cassandra_client_encryption_enabled: false
+
+# SSL/TLS paths
+cassandra_ssl_keystore_path: "{{ cassandra_config_dir }}/ssl/keystore.p12"
+cassandra_ssl_truststore_path: "{{ cassandra_config_dir }}/ssl/truststore.p12"
+
+# Passwords (should be in vault)
+cassandra_ssl_keystore_password: "{{ vault_cassandra_ssl_keystore_password | default('cassandra') }}"
+cassandra_ssl_truststore_password: "{{ vault_cassandra_ssl_truststore_password | default('cassandra') }}"
+
+# SSL/TLS protocol and cipher settings
+cassandra_ssl_protocol: "TLSv1.2"
+cassandra_ssl_algorithm: "SunX509"
+cassandra_ssl_store_type: "PKCS12"
+cassandra_ssl_cipher_suites:
+  - "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
+  - "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
+  - "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+  - "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+  - "TLS_RSA_WITH_AES_256_GCM_SHA384"
+  - "TLS_RSA_WITH_AES_128_GCM_SHA256"
+
+# Certificate generation
+cassandra_ssl_generate_self_signed: true
+cassandra_ssl_cert_validity_days: 3650
+
+# Certificate details (for self-signed)
+cassandra_ssl_org_name: "Cassandra Cluster"
+cassandra_ssl_org_unit: "IT"
+cassandra_ssl_country: "US"
+cassandra_ssl_state: "CA"
+cassandra_ssl_locality: "San Francisco"
+
+# Mutual authentication
+cassandra_ssl_mutual_auth_enabled: false
+cassandra_ssl_require_client_auth: false
+cassandra_ssl_require_endpoint_verification: false
+
+# Optional during migration
+cassandra_ssl_optional: true
+
+# Legacy SSL port
+cassandra_ssl_legacy_port_enabled: false

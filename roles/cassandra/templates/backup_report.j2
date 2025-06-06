@@ -1,0 +1,51 @@
+CASSANDRA BACKUP REPORT
+=====================
+
+Backup Information:
+------------------
+Timestamp: {{ backup_timestamp }}
+Type: {{ backup_type }}
+Node: {{ inventory_hostname }}
+Datacenter: {{ cassandra_dc }}
+Rack: {{ cassandra_rack }}
+Cassandra Version: {{ cassandra_version }}
+
+Backup Location:
+---------------
+Base Directory: {{ backup_base_dir }}
+Backup Directory: {{ backup_dir }}
+
+Keyspaces Backed Up:
+-------------------
+{% for keyspace in keyspaces_to_backup %}
+- {{ keyspace }}
+{% endfor %}
+
+Backup Contents:
+---------------
+- Schema exports: {{ backup_dir }}/schema/
+- Snapshot data: {{ backup_dir }}/snapshots/
+- Ring tokens: {{ backup_dir }}/tokens/
+- Metadata: {{ backup_dir }}/metadata.yml
+
+Retention Policy:
+----------------
+Current retention: {{ backup_retention_days }} days
+Old backups will be automatically removed
+
+Node Status at Backup Time:
+--------------------------
+{{ nodetool_status.stdout }}
+
+Restore Instructions:
+--------------------
+To restore this backup, run:
+ansible-playbook playbooks/operational/restore-cluster.yml -e backup_timestamp={{ backup_timestamp }}
+
+Notes:
+------
+- Ensure sufficient disk space before restore
+- Consider running repair after restore
+- Verify data integrity after restore completes
+
+Generated: {{ ansible_date_time.iso8601 }}

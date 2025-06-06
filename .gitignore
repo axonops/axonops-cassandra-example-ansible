@@ -1,23 +1,24 @@
 
 
-# Ansible
+# Ansible runtime
 *.retry
-ansible.log
+*.log
+
+# Vault password file
+.vault_pass
+vault_pass.txt
+
 
 # Python
+*.pyc
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
+.venv/
 venv/
-ENV/
-.venv
+.pipenv/
 
 # IDE
-.vscode/
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
@@ -26,17 +27,23 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Sensitive data
-group_vars/*/vault.yml
-host_vars/*/vault.yml
-*.pem
-*.key
-*.crt
-
 # Temporary files
 *.tmp
-*.temp
-*.backup
+*.bak
+.cache/
+
+# SSH keys (if accidentally placed here)
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Ansible facts cache
+.ansible_facts/
+
+# Local test inventory
+inventory/test/
+inventory/local/
 
 # Claude AI artifacts and internal processing
 .claude/

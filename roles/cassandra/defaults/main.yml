@@ -1,0 +1,12 @@
+---
+# Default variables for Cassandra role
+
+# Basic installation settings
+cassandra_version: "5.0.4"
+cassandra_user: cassandra
+cassandra_group: cassandra
+cassandra_home: /opt/cassandra
+cassandra_install_dir: "/opt/apache-cassandra-{{ cassandra_version }}"
+
+# Include all Cassandra configuration defaults
+# This is done via vars_files in the role's tasks/main.yml

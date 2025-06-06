@@ -1,0 +1,13 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Cassandra startup script with proper umask
+
+# Set umask for proper file permissions
+umask 0027
+
+# Export Cassandra home
+export CASSANDRA_HOME="{{ cassandra_home }}"
+export CASSANDRA_CONF="{{ cassandra_home }}/conf"
+
+# Start Cassandra in the background
+exec {{ cassandra_home }}/bin/cassandra -p {{ cassandra_home }}/cassandra.pid

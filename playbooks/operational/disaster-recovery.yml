@@ -1,0 +1,309 @@
+---
+# Disaster Recovery playbook for Cassandra cluster
+
+- name: Disaster Recovery - Assess and Recover Cassandra Cluster
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  any_errors_fatal: no
+  
+  vars:
+    recovery_mode: "{{ dr_mode | default('assess') }}"  # assess, repair, rebuild, replace
+    failed_datacenter: "{{ failed_dc | default('') }}"
+    recovery_options:
+      force_repair: "{{ force_repair | default(false) }}"
+      rebuild_dc: "{{ rebuild_dc | default(false) }}"
+      restore_from_backup: "{{ restore_backup | default(false) }}"
+      backup_timestamp: "{{ backup_ts | default('latest') }}"
+
+  tasks:
+    - name: Phase 1 - Assessment
+      block:
+        - name: Initialize disaster report
+          set_fact:
+            disaster_report:
+              timestamp: "{{ ansible_date_time.iso8601 }}"
+              cluster: "{{ cassandra_cluster_name }}"
+              mode: "{{ recovery_mode }}"
+              nodes_assessed: []
+              healthy_nodes: []
+              unhealthy_nodes: []
+              recommendations: []
+
+        - name: Check node accessibility
+          wait_for:
+            host: "{{ inventory_hostname }}"
+            port: 22
+            timeout: 10
+          delegate_to: localhost
+          ignore_errors: yes
+          register: ssh_check
+
+        - name: Record inaccessible nodes
+          set_fact:
+            disaster_report: "{{ disaster_report | combine({'unhealthy_nodes': disaster_report.unhealthy_nodes + [inventory_hostname]}) }}"
+          when: ssh_check.failed | default(false)
+
+        - name: Check Cassandra service status
+          systemd:
+            name: cassandra
+          register: cassandra_status
+          ignore_errors: yes
+          when: not (ssh_check.failed | default(false))
+
+        - name: Get nodetool status
+          shell: "{{ cassandra_home }}/bin/nodetool status"
+          register: nodetool_status
+          become_user: "{{ cassandra_user }}"
+          ignore_errors: yes
+          when: 
+            - not (ssh_check.failed | default(false))
+            - cassandra_status.status.ActiveState == "active"
+
+        - name: Analyze cluster topology
+          shell: |
+            echo "=== Cluster State ==="
+            {{ cassandra_home }}/bin/nodetool status | grep -E "^[UD][NL]"
+            echo ""
+            echo "=== Down Nodes ==="
+            {{ cassandra_home }}/bin/nodetool status | grep -E "^D[NL]" || echo "No down nodes"
+            echo ""
+            echo "=== Datacenter Summary ==="
+            {{ cassandra_home }}/bin/nodetool status | grep "Datacenter:" | sort | uniq -c
+          register: cluster_analysis
+          become_user: "{{ cassandra_user }}"
+          ignore_errors: yes
+          run_once: yes
+          when: nodetool_status is succeeded
+
+        - name: Check data consistency
+          shell: |
+            # Get repair status
+            {{ cassandra_home }}/bin/nodetool repair_admin list | head -20 || echo "No repair history"
+          register: repair_status
+          become_user: "{{ cassandra_user }}"
+          ignore_errors: yes
+          when: nodetool_status is succeeded
+
+        - name: Record healthy nodes
+          set_fact:
+            disaster_report: "{{ disaster_report | combine({'healthy_nodes': disaster_report.healthy_nodes + [inventory_hostname]}) }}"
+          when:
+            - not (ssh_check.failed | default(false))
+            - cassandra_status.status.ActiveState == "active"
+            - "'UN' in (nodetool_status.stdout | default(''))"
+
+      tags: [assess]
+
+    - name: Phase 2 - Emergency Response
+      when: recovery_mode in ['repair', 'rebuild', 'replace']
+      block:
+        - name: Stop gossip on problematic nodes
+          shell: "{{ cassandra_home }}/bin/nodetool disablegossip"
+          become_user: "{{ cassandra_user }}"
+          when:
+            - inventory_hostname in disaster_report.unhealthy_nodes
+            - cassandra_status.status.ActiveState == "active"
+          ignore_errors: yes
+
+        - name: Perform emergency repair
+          when: recovery_mode == 'repair' or recovery_options.force_repair
+          block:
+            - name: Run repair on healthy nodes
+              shell: |
+                {{ cassandra_home }}/bin/nodetool repair -pr {{ repair_keyspace | default('') }}
+              become_user: "{{ cassandra_user }}"
+              when: inventory_hostname in disaster_report.healthy_nodes
+              async: 7200  # 2 hour timeout
+              poll: 60
+
+        - name: Rebuild failed datacenter
+          when: 
+            - recovery_mode == 'rebuild'
+            - recovery_options.rebuild_dc
+            - failed_datacenter != ''
+          block:
+            - name: Clear data on nodes in failed DC
+              shell: |
+                systemctl stop cassandra
+                rm -rf {{ cassandra_data_dir }}/data/*
+                rm -rf {{ cassandra_commit_log_dir }}/*
+                rm -rf {{ cassandra_saved_caches_dir }}/*
+              when: cassandra_dc == failed_datacenter
+
+            - name: Start nodes in failed DC
+              systemd:
+                name: cassandra
+                state: started
+              when: cassandra_dc == failed_datacenter
+
+            - name: Wait for nodes to start
+              wait_for:
+                port: 9042
+                host: "{{ cassandra_listen_address }}"
+                delay: 30
+                timeout: 300
+              when: cassandra_dc == failed_datacenter
+
+            - name: Rebuild from surviving DC
+              shell: |
+                {{ cassandra_home }}/bin/nodetool rebuild {{ source_dc | default('dc1') }}
+              become_user: "{{ cassandra_user }}"
+              when: cassandra_dc == failed_datacenter
+              async: 14400  # 4 hour timeout
+              poll: 60
+
+      tags: [recover]
+
+    - name: Phase 3 - Replace Dead Nodes
+      when: recovery_mode == 'replace'
+      block:
+        - name: Identify dead nodes
+          shell: |
+            {{ cassandra_home }}/bin/nodetool status | grep "^DN" | awk '{print $2}'
+          register: dead_nodes
+          become_user: "{{ cassandra_user }}"
+          run_once: yes
+          when: inventory_hostname in disaster_report.healthy_nodes
+
+        - name: Remove dead nodes from cluster
+          shell: |
+            {{ cassandra_home }}/bin/nodetool removenode {{ item }}
+          loop: "{{ dead_nodes.stdout_lines }}"
+          become_user: "{{ cassandra_user }}"
+          when: 
+            - inventory_hostname in disaster_report.healthy_nodes
+            - dead_nodes.stdout_lines | length > 0
+          throttle: 1
+
+        - name: Instructions for node replacement
+          debug:
+            msg: |
+              Dead nodes have been removed. To add replacement nodes:
+              1. Provision new nodes with same hardware specs
+              2. Update inventory with new node IPs
+              3. Run: make deploy CLUSTER={{ cluster_name | default('prod-001') }} --limit=new_nodes
+              4. The new nodes will automatically bootstrap
+
+      tags: [replace]
+
+    - name: Phase 4 - Restore from Backup
+      when: 
+        - recovery_mode == 'restore'
+        - recovery_options.restore_from_backup
+      block:
+        - name: Find latest backup
+          find:
+            paths: "{{ cassandra_backup_dir | default('/var/backups/cassandra') }}"
+            file_type: directory
+            recurse: no
+          register: available_backups
+          run_once: yes
+
+        - name: Select backup to restore
+          set_fact:
+            selected_backup: "{{ available_backups.files | sort(attribute='mtime', reverse=true) | first }}"
+          when: recovery_options.backup_timestamp == 'latest'
+          run_once: yes
+
+        - name: Trigger restore playbook
+          include_tasks: restore-cluster.yml
+          vars:
+            backup_timestamp: "{{ selected_backup.path | basename }}"
+            stop_cassandra_for_restore: yes
+            verify_restore: yes
+
+      tags: [restore]
+
+    - name: Phase 5 - Post-Recovery Validation
+      block:
+        - name: Final cluster status check
+          shell: "{{ cassandra_home }}/bin/nodetool status"
+          register: final_status
+          become_user: "{{ cassandra_user }}"
+          when: inventory_hostname in disaster_report.healthy_nodes
+
+        - name: Check cluster connectivity
+          shell: |
+            {{ cassandra_home }}/bin/cqlsh {{ cassandra_listen_address }} \
+            -e "SELECT * FROM system.local" > /dev/null && echo "CQL connectivity: OK"
+          register: cql_check
+          become_user: "{{ cassandra_user }}"
+          when: inventory_hostname in disaster_report.healthy_nodes
+
+        - name: Generate recovery recommendations
+          set_fact:
+            disaster_report: "{{ disaster_report | combine({'recommendations': disaster_report.recommendations + [item]}) }}"
+          loop:
+            - "Run full repair after recovery: make repair-cluster CLUSTER={{ cluster_name | default('prod-001') }}"
+            - "Monitor cluster health: make monitor-health CLUSTER={{ cluster_name | default('prod-001') }}"
+            - "Create fresh backup: make backup-cluster CLUSTER={{ cluster_name | default('prod-001') }}"
+            - "Review and update disaster recovery procedures"
+          run_once: yes
+
+      tags: [validate]
+
+  post_tasks:
+    - name: Generate disaster recovery report
+      run_once: yes
+      block:
+        - name: Create report content
+          set_fact:
+            dr_report_content: |
+              DISASTER RECOVERY REPORT
+              ========================
+              
+              Timestamp: {{ disaster_report.timestamp }}
+              Cluster: {{ disaster_report.cluster }}
+              Recovery Mode: {{ disaster_report.mode }}
+              
+              Node Status Summary:
+              - Total Nodes: {{ ansible_play_hosts | length }}
+              - Healthy Nodes: {{ disaster_report.healthy_nodes | length }}
+              - Unhealthy Nodes: {{ disaster_report.unhealthy_nodes | length }}
+              
+              Healthy Nodes:
+              {% for node in disaster_report.healthy_nodes %}
+              - {{ node }}
+              {% endfor %}
+              
+              Unhealthy Nodes:
+              {% for node in disaster_report.unhealthy_nodes %}
+              - {{ node }}
+              {% endfor %}
+              
+              Cluster Analysis:
+              {{ cluster_analysis.stdout | default('Not available') }}
+              
+              Recovery Actions Taken:
+              - Mode: {{ recovery_mode }}
+              {% if recovery_options.force_repair %}
+              - Forced repair executed
+              {% endif %}
+              {% if recovery_options.rebuild_dc %}
+              - Datacenter {{ failed_datacenter }} rebuilt
+              {% endif %}
+              {% if recovery_options.restore_from_backup %}
+              - Restored from backup: {{ recovery_options.backup_timestamp }}
+              {% endif %}
+              
+              Recommendations:
+              {% for rec in disaster_report.recommendations %}
+              - {{ rec }}
+              {% endfor %}
+              
+              Next Steps:
+              1. Review this report with your team
+              2. Execute recommended actions
+              3. Update runbooks based on lessons learned
+              4. Schedule a post-mortem meeting
+
+        - name: Save disaster recovery report
+          copy:
+            content: "{{ dr_report_content }}"
+            dest: "/tmp/disaster_recovery_report_{{ ansible_date_time.epoch }}.txt"
+          delegate_to: localhost
+
+        - name: Display recovery summary
+          debug:
+            msg: "{{ dr_report_content }}"

@@ -1,0 +1,32 @@
+---
+# AxonOps agent service setup
+
+- name: Enable axon-agent service
+  systemd:
+    name: axon-agent
+    enabled: yes
+    daemon_reload: yes
+
+- name: Start axon-agent service
+  systemd:
+    name: axon-agent
+    state: started
+  register: axonops_start_result
+
+- name: Wait for AxonOps agent to be ready
+  wait_for:
+    path: /var/log/axonops/axon-agent.log
+    search_regex: "Connected to AxonOps"
+    timeout: 60
+  when: axonops_start_result.changed
+  ignore_errors: yes
+
+- name: Check AxonOps agent status
+  systemd:
+    name: axon-agent
+    state: started
+  register: agent_status
+
+- name: Display agent status
+  debug:
+    msg: "AxonOps agent is {{ 'running' if agent_status.status.ActiveState == 'active' else 'not running' }}"

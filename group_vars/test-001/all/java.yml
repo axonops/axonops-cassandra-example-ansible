@@ -1,0 +1,6 @@
+---
+# Test cluster Java configuration
+
+# JVM heap settings (smaller for test)
+java_heap_size: 4G
+java_new_size: 1G

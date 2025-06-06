@@ -1,0 +1,94 @@
+---
+# Check Cassandra cluster status
+
+- name: Check Cassandra cluster status
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Check Cassandra service status
+      systemd:
+        name: cassandra
+      register: cassandra_service
+
+    - name: Display service status
+      debug:
+        msg: "Cassandra service on {{ inventory_hostname }}: {{ cassandra_service.status.ActiveState }}"
+
+    - name: Check if Cassandra is listening on native port
+      wait_for:
+        port: 9042
+        host: "{{ cassandra_listen_address }}"
+        timeout: 5
+      register: native_port
+      ignore_errors: yes
+
+    - name: Check if Cassandra is listening on JMX port
+      wait_for:
+        port: 7199
+        host: localhost
+        timeout: 5
+      register: jmx_port
+      ignore_errors: yes
+
+    - name: Run nodetool status
+      command: "{{ cassandra_home }}/bin/nodetool status"
+      register: nodetool_status
+      changed_when: false
+      when: jmx_port is succeeded
+
+    - name: Display nodetool status
+      debug:
+        var: nodetool_status.stdout_lines
+      when: nodetool_status is defined and nodetool_status.stdout_lines is defined
+
+    - name: Run nodetool info
+      command: "{{ cassandra_home }}/bin/nodetool info"
+      register: nodetool_info
+      changed_when: false
+      when: jmx_port is succeeded
+
+    - name: Extract key information
+      set_fact:
+        node_info:
+          hostname: "{{ inventory_hostname }}"
+          service_status: "{{ cassandra_service.status.ActiveState }}"
+          native_port: "{{ 'LISTENING' if native_port is succeeded else 'NOT LISTENING' }}"
+          jmx_port: "{{ 'LISTENING' if jmx_port is succeeded else 'NOT LISTENING' }}"
+          gossip_state: "{{ nodetool_info.stdout | regex_search('Gossip active\\s+:\\s+(\\w+)', '\\1') | first if nodetool_info is defined else 'UNKNOWN' }}"
+          thrift_state: "{{ nodetool_info.stdout | regex_search('Native Transport active:\\s+(\\w+)', '\\1') | first if nodetool_info is defined else 'UNKNOWN' }}"
+
+    - name: Display node summary
+      debug:
+        msg: |
+          Node: {{ node_info.hostname }}
+          Service: {{ node_info.service_status }}
+          Native Port (9042): {{ node_info.native_port }}
+          JMX Port (7199): {{ node_info.jmx_port }}
+          Gossip: {{ node_info.gossip_state }}
+          Native Transport: {{ node_info.thrift_state }}
+
+    - name: Check cluster consistency
+      block:
+        - name: Get datacenter and rack info
+          command: "{{ cassandra_home }}/bin/nodetool info | grep -E 'Data Center|Rack'"
+          register: dc_rack_info
+          changed_when: false
+
+        - name: Display DC and rack info
+          debug:
+            var: dc_rack_info.stdout_lines
+      when: jmx_port is succeeded
+
+    - name: Check for any down nodes in cluster view
+      shell: |
+        {{ cassandra_home }}/bin/nodetool status | grep -E "^D[NLJM]" || echo "No down nodes detected"
+      register: down_nodes
+      changed_when: false
+      when: jmx_port is succeeded
+
+    - name: Display down nodes check
+      debug:
+        msg: "{{ down_nodes.stdout }}"
+      when: down_nodes is defined

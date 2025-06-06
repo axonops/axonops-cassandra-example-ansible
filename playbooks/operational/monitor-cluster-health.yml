@@ -1,0 +1,268 @@
+---
+# Playbook to monitor Cassandra cluster health and generate alerts
+
+- name: Monitor Cassandra cluster health
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Thresholds for alerts
+    thresholds:
+      heap_usage_percent: 85
+      disk_usage_percent: 80
+      pending_compactions: 100
+      dropped_messages: 1000
+      blocked_tasks: 5
+      down_nodes: 0
+      gc_pause_ms: 200
+      read_latency_ms: 10
+      write_latency_ms: 5
+    
+    # Alert destinations
+    alert_email: "{{ cassandra_alert_email | default('ops@example.com') }}"
+    alert_webhook: "{{ cassandra_alert_webhook | default('') }}"
+
+  tasks:
+    - name: Initialize health report
+      set_fact:
+        health_report:
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          cluster: "{{ cassandra_cluster_name }}"
+          datacenter: "{{ cassandra_dc }}"
+          node: "{{ inventory_hostname }}"
+          status: "HEALTHY"
+          checks: []
+          alerts: []
+
+    - name: Check node status
+      block:
+        - name: Get nodetool status
+          shell: "{{ cassandra_home }}/bin/nodetool status"
+          register: nodetool_status
+          changed_when: false
+          become_user: "{{ cassandra_user }}"
+
+        - name: Parse node states
+          set_fact:
+            down_nodes: "{{ nodetool_status.stdout | regex_findall('D[NL]\\s+') | length }}"
+            total_nodes: "{{ nodetool_status.stdout | regex_findall('[UD][NL]\\s+') | length }}"
+
+        - name: Check for down nodes
+          set_fact:
+            health_report: "{{ health_report | combine({'alerts': health_report.alerts + ['CRITICAL: ' + down_nodes + ' nodes are down']}) }}"
+          when: down_nodes | int > thresholds.down_nodes
+
+        - name: Add node status to report
+          set_fact:
+            health_report: "{{ health_report | combine({'checks': health_report.checks + [{'name': 'Node Status', 'value': total_nodes | string + ' nodes (' + down_nodes + ' down)', 'status': 'OK' if down_nodes | int == 0 else 'CRITICAL'}]}) }}"
+
+    - name: Check heap usage
+      block:
+        - name: Get heap usage
+          shell: |
+            {{ cassandra_home }}/bin/nodetool info | grep "Heap Memory" | awk '{print $4}' | sed 's/[()]//g' | cut -d'%' -f1
+          register: heap_usage
+          changed_when: false
+          become_user: "{{ cassandra_user }}"
+
+        - name: Check heap threshold
+          set_fact:
+            health_report: "{{ health_report | combine({'alerts': health_report.alerts + ['WARNING: Heap usage is ' + heap_usage.stdout + '%']}) }}"
+          when: heap_usage.stdout | int > thresholds.heap_usage_percent
+
+        - name: Add heap usage to report
+          set_fact:
+            health_report: "{{ health_report | combine({'checks': health_report.checks + [{'name': 'Heap Usage', 'value': heap_usage.stdout + '%', 'status': 'OK' if heap_usage.stdout | int <= thresholds.heap_usage_percent else 'WARNING'}]}) }}"
+
+    - name: Check disk usage
+      block:
+        - name: Get data directory disk usage
+          shell: df -h {{ cassandra_data_dir }} | tail -1 | awk '{print $5}' | sed 's/%//'
+          register: disk_usage
+          changed_when: false
+
+        - name: Check disk threshold
+          set_fact:
+            health_report: "{{ health_report | combine({'alerts': health_report.alerts + ['WARNING: Disk usage is ' + disk_usage.stdout + '%']}) }}"
+          when: disk_usage.stdout | int > thresholds.disk_usage_percent
+
+        - name: Add disk usage to report
+          set_fact:
+            health_report: "{{ health_report | combine({'checks': health_report.checks + [{'name': 'Disk Usage', 'value': disk_usage.stdout + '%', 'status': 'OK' if disk_usage.stdout | int <= thresholds.disk_usage_percent else 'WARNING'}]}) }}"
+
+    - name: Check pending compactions
+      block:
+        - name: Get pending compactions
+          shell: |
+            {{ cassandra_home }}/bin/nodetool compactionstats | grep "pending tasks" | awk '{print $3}'
+          register: pending_compactions
+          changed_when: false
+          become_user: "{{ cassandra_user }}"
+          ignore_errors: yes
+
+        - name: Set default if no compactions
+          set_fact:
+            pending_count: "{{ pending_compactions.stdout | default('0') }}"
+
+        - name: Check compaction threshold
+          set_fact:
+            health_report: "{{ health_report | combine({'alerts': health_report.alerts + ['WARNING: ' + pending_count + ' pending compactions']}) }}"
+          when: pending_count | int > thresholds.pending_compactions
+
+        - name: Add pending compactions to report
+          set_fact:
+            health_report: "{{ health_report | combine({'checks': health_report.checks + [{'name': 'Pending Compactions', 'value': pending_count, 'status': 'OK' if pending_count | int <= thresholds.pending_compactions else 'WARNING'}]}) }}"
+
+    - name: Check thread pools
+      block:
+        - name: Get thread pool stats
+          shell: |
+            {{ cassandra_home }}/bin/nodetool tpstats | grep -E "(Active|Pending|Blocked)" | grep -v "All time blocked"
+          register: thread_pools
+          changed_when: false
+          become_user: "{{ cassandra_user }}"
+
+        - name: Check for blocked tasks
+          shell: |
+            {{ cassandra_home }}/bin/nodetool tpstats | grep -v "All time blocked" | grep "Blocked" | awk '{sum += $2} END {print sum}'
+          register: blocked_tasks
+          changed_when: false
+          become_user: "{{ cassandra_user }}"
+
+        - name: Check blocked tasks threshold
+          set_fact:
+            health_report: "{{ health_report | combine({'alerts': health_report.alerts + ['CRITICAL: ' + blocked_tasks.stdout + ' blocked tasks']}) }}"
+          when: blocked_tasks.stdout | int > thresholds.blocked_tasks
+
+        - name: Add thread pool status to report
+          set_fact:
+            health_report: "{{ health_report | combine({'checks': health_report.checks + [{'name': 'Blocked Tasks', 'value': blocked_tasks.stdout | default('0'), 'status': 'OK' if blocked_tasks.stdout | default('0') | int <= thresholds.blocked_tasks else 'CRITICAL'}]}) }}"
+
+    - name: Check GC performance
+      block:
+        - name: Get GC stats from log
+          shell: |
+            tail -1000 {{ cassandra_log_dir }}/gc.log | grep "Total time for which application threads were stopped" | \
+            awk '{print $11}' | sed 's/,//' | sort -n | tail -10 | awk '{sum+=$1; count++} END {if(count>0) print int(sum/count*1000); else print 0}'
+          register: avg_gc_pause
+          changed_when: false
+          ignore_errors: yes
+
+        - name: Check GC pause threshold
+          set_fact:
+            health_report: "{{ health_report | combine({'alerts': health_report.alerts + ['WARNING: Average GC pause is ' + avg_gc_pause.stdout | default('0') + 'ms']}) }}"
+          when: avg_gc_pause.stdout | default('0') | int > thresholds.gc_pause_ms
+
+        - name: Add GC stats to report
+          set_fact:
+            health_report: "{{ health_report | combine({'checks': health_report.checks + [{'name': 'Avg GC Pause', 'value': avg_gc_pause.stdout | default('0') + 'ms', 'status': 'OK' if avg_gc_pause.stdout | default('0') | int <= thresholds.gc_pause_ms else 'WARNING'}]}) }}"
+
+    - name: Check client request metrics
+      block:
+        - name: Get read latency
+          shell: |
+            {{ cassandra_home }}/bin/nodetool proxyhistograms | grep "Read Latency" -A 15 | grep "95%" | awk '{print $2}'
+          register: read_latency
+          changed_when: false
+          become_user: "{{ cassandra_user }}"
+          ignore_errors: yes
+
+        - name: Get write latency
+          shell: |
+            {{ cassandra_home }}/bin/nodetool proxyhistograms | grep "Write Latency" -A 15 | grep "95%" | awk '{print $2}'
+          register: write_latency
+          changed_when: false
+          become_user: "{{ cassandra_user }}"
+          ignore_errors: yes
+
+        - name: Convert latencies to ms
+          set_fact:
+            read_latency_ms: "{{ (read_latency.stdout | default('0') | float / 1000) | round(2) }}"
+            write_latency_ms: "{{ (write_latency.stdout | default('0') | float / 1000) | round(2) }}"
+
+        - name: Check latency thresholds
+          set_fact:
+            health_report: "{{ health_report | combine({'alerts': health_report.alerts + ['WARNING: Read latency is ' + read_latency_ms | string + 'ms']}) }}"
+          when: read_latency_ms | float > thresholds.read_latency_ms
+
+        - name: Add latency metrics to report
+          set_fact:
+            health_report: "{{ health_report | combine({'checks': health_report.checks + [{'name': 'Read Latency (95%)', 'value': read_latency_ms | string + 'ms', 'status': 'OK' if read_latency_ms | float <= thresholds.read_latency_ms else 'WARNING'}]}) }}"
+
+    - name: Check AxonOps agent
+      block:
+        - name: Check agent status
+          systemd:
+            name: axon-agent
+          register: agent_status
+          check_mode: yes
+
+        - name: Check agent connectivity
+          uri:
+            url: "http://localhost:9916/health"
+            timeout: 5
+          register: agent_health
+          ignore_errors: yes
+
+        - name: Add agent status to report
+          set_fact:
+            health_report: "{{ health_report | combine({'checks': health_report.checks + [{'name': 'AxonOps Agent', 'value': 'Running' if agent_status.status.ActiveState == 'active' else 'Stopped', 'status': 'OK' if agent_status.status.ActiveState == 'active' else 'CRITICAL'}]}) }}"
+
+    - name: Set overall status
+      set_fact:
+        health_report: "{{ health_report | combine({'status': 'CRITICAL' if health_report.alerts | select('match', '^CRITICAL:') | list | length > 0 else ('WARNING' if health_report.alerts | length > 0 else 'HEALTHY')}) }}"
+
+    - name: Save health report
+      copy:
+        content: "{{ health_report | to_nice_yaml }}"
+        dest: "/tmp/health_report_{{ inventory_hostname }}_{{ ansible_date_time.epoch }}.yml"
+      delegate_to: localhost
+
+    - name: Display health summary
+      debug:
+        msg: |
+          Health Check Summary for {{ inventory_hostname }}
+          ================================================
+          Status: {{ health_report.status }}
+          
+          Checks performed:
+          {% for check in health_report.checks %}
+          - {{ check.name }}: {{ check.value }} [{{ check.status }}]
+          {% endfor %}
+          
+          {% if health_report.alerts | length > 0 %}
+          Alerts:
+          {% for alert in health_report.alerts %}
+          - {{ alert }}
+          {% endfor %}
+          {% endif %}
+
+  post_tasks:
+    - name: Generate cluster-wide summary
+      run_once: yes
+      block:
+        - name: Collect all health reports
+          set_fact:
+            cluster_health: "{{ hostvars | dict2items | selectattr('value.health_report', 'defined') | map(attribute='value.health_report') | list }}"
+
+        - name: Calculate cluster status
+          set_fact:
+            cluster_status:
+              healthy_nodes: "{{ cluster_health | selectattr('status', 'equalto', 'HEALTHY') | list | length }}"
+              warning_nodes: "{{ cluster_health | selectattr('status', 'equalto', 'WARNING') | list | length }}"
+              critical_nodes: "{{ cluster_health | selectattr('status', 'equalto', 'CRITICAL') | list | length }}"
+              total_nodes: "{{ cluster_health | length }}"
+
+        - name: Display cluster summary
+          debug:
+            msg: |
+              Cluster Health Summary
+              ======================
+              Cluster: {{ cassandra_cluster_name }}
+              Total Nodes: {{ cluster_status.total_nodes }}
+              Healthy: {{ cluster_status.healthy_nodes }}
+              Warning: {{ cluster_status.warning_nodes }}
+              Critical: {{ cluster_status.critical_nodes }}
+              
+              Overall Status: {{ 'CRITICAL' if cluster_status.critical_nodes > 0 else ('WARNING' if cluster_status.warning_nodes > 0 else 'HEALTHY') }}

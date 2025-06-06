@@ -1,0 +1,7 @@
+---
+# Test cluster Linux configuration
+
+# NTP servers
+ntp_servers:
+  - ntp1.test.example.com
+  - ntp2.test.example.com

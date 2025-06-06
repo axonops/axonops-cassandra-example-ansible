@@ -1,0 +1,5 @@
+---
+# DC2 specific variables
+
+cassandra_dc_name: dc2
+cassandra_prefer_local: true

@@ -1,0 +1,50 @@
+---
+# Download Cassandra tarball locally
+
+- name: Download Apache Cassandra tarball
+  hosts: localhost
+  gather_facts: no
+  
+  tasks:
+    - name: Create downloads directory
+      file:
+        path: downloads
+        state: directory
+        mode: '0755'
+
+    - name: Check if Cassandra tarball already exists
+      stat:
+        path: "downloads/apache-cassandra-{{ cassandra_version }}-bin.tar.gz"
+      register: existing_tarball
+
+    - name: Download Cassandra tarball
+      get_url:
+        url: "{{ cassandra_download_url }}"
+        dest: "downloads/apache-cassandra-{{ cassandra_version }}-bin.tar.gz"
+        timeout: 300
+      when: not existing_tarball.stat.exists
+
+    - name: Download Cassandra checksum file
+      get_url:
+        url: "{{ cassandra_download_checksum_url }}"
+        dest: "downloads/apache-cassandra-{{ cassandra_version }}-bin.tar.gz.sha512"
+        timeout: 60
+      when: not existing_tarball.stat.exists
+
+    - name: Verify checksum
+      shell: |
+        cd downloads
+        sha512sum -c apache-cassandra-{{ cassandra_version }}-bin.tar.gz.sha512
+      changed_when: false
+      when: not existing_tarball.stat.exists
+
+    - name: Display download status
+      debug:
+        msg: |
+          Cassandra {{ cassandra_version }} download complete
+          File: downloads/apache-cassandra-{{ cassandra_version }}-bin.tar.gz
+          {% if existing_tarball.stat.exists %}
+          Status: Already exists (skipped download)
+          {% else %}
+          Status: Downloaded and verified
+          {% endif %}

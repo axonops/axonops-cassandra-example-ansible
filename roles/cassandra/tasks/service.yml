@@ -1,0 +1,53 @@
+---
+# Cassandra service setup
+
+- name: Create Cassandra systemd service file
+  template:
+    src: cassandra.service.j2
+    dest: /etc/systemd/system/cassandra.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: 
+    - reload systemd
+    - restart cassandra
+
+- name: Create Cassandra startup script
+  template:
+    src: cassandra-startup.sh.j2
+    dest: "{{ cassandra_home }}/bin/cassandra-startup.sh"
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0750'
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: yes
+
+- name: Enable Cassandra service
+  systemd:
+    name: cassandra
+    enabled: yes
+
+- name: Start Cassandra service
+  systemd:
+    name: cassandra
+    state: started
+  register: cassandra_start_result
+
+- name: Wait for Cassandra to start
+  wait_for:
+    port: 9042
+    host: "{{ cassandra_listen_address }}"
+    delay: 10
+    timeout: 120
+  when: cassandra_start_result.changed
+
+- name: Wait for Cassandra to be fully operational
+  shell: |
+    {{ cassandra_home }}/bin/nodetool status
+  register: nodetool_result
+  until: nodetool_result.rc == 0
+  retries: 12
+  delay: 10
+  when: cassandra_start_result.changed

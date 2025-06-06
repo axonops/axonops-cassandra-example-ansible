@@ -1,0 +1,18 @@
+---
+# Main tasks for AxonOps agent installation
+
+- name: Include OS-specific variables
+  include_vars: "{{ ansible_distribution }}.yml"
+  tags: [axonops]
+
+- name: Install AxonOps repository and agent
+  include_tasks: install.yml
+  tags: [axonops, install]
+
+- name: Configure AxonOps agent
+  include_tasks: configure.yml
+  tags: [axonops, configure]
+
+- name: Setup AxonOps agent service
+  include_tasks: service.yml
+  tags: [axonops, service]

@@ -1,0 +1,77 @@
+---
+# Cassandra installation tasks
+
+- name: Check if Cassandra tarball exists locally
+  local_action:
+    module: stat
+    path: "downloads/apache-cassandra-{{ cassandra_version }}-bin.tar.gz"
+  register: local_tarball
+  become: no
+
+- name: Download Cassandra if not present locally
+  block:
+    - name: Download Cassandra tarball
+      local_action:
+        module: get_url
+        url: "{{ cassandra_download_url }}"
+        dest: "downloads/apache-cassandra-{{ cassandra_version }}-bin.tar.gz"
+        timeout: 300
+      become: no
+
+    - name: Download Cassandra checksum
+      local_action:
+        module: get_url
+        url: "{{ cassandra_download_checksum_url }}"
+        dest: "downloads/apache-cassandra-{{ cassandra_version }}-bin.tar.gz.sha512"
+        timeout: 60
+      become: no
+
+    - name: Verify Cassandra tarball checksum
+      local_action:
+        module: shell
+        cmd: |
+          cd downloads
+          sha512sum -c apache-cassandra-{{ cassandra_version }}-bin.tar.gz.sha512
+      become: no
+  when: not local_tarball.stat.exists
+
+- name: Copy Cassandra tarball to remote host
+  copy:
+    src: "downloads/apache-cassandra-{{ cassandra_version }}-bin.tar.gz"
+    dest: "/tmp/apache-cassandra-{{ cassandra_version }}-bin.tar.gz"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Extract Cassandra
+  unarchive:
+    src: "/tmp/apache-cassandra-{{ cassandra_version }}-bin.tar.gz"
+    dest: /opt
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0755'
+    remote_src: yes
+    creates: "{{ cassandra_install_dir }}"
+
+- name: Create symlink to current Cassandra version
+  file:
+    src: "{{ cassandra_install_dir }}"
+    dest: "{{ cassandra_home }}"
+    state: link
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+
+- name: Add Cassandra bin directories to PATH
+  copy:
+    content: |
+      export PATH="{{ cassandra_home }}/bin:{{ cassandra_home }}/tools/bin:$PATH"
+      export CASSANDRA_HOME="{{ cassandra_home }}"
+    dest: /etc/profile.d/cassandra.sh
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Clean up temporary tarball
+  file:
+    path: "/tmp/apache-cassandra-{{ cassandra_version }}-bin.tar.gz"
+    state: absent

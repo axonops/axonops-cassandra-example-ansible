@@ -1,0 +1,234 @@
+---
+# Playbook to restore Cassandra cluster from backup
+
+- name: Restore Cassandra cluster from backup
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  serial: "{{ restore_parallel | default(1) }}"
+  
+  vars:
+    backup_base_dir: "{{ cassandra_backup_dir | default('/var/backups/cassandra') }}"
+    restore_keyspaces: "{{ cassandra_restore_keyspaces | default([]) }}"
+    restore_verify: "{{ verify_restore | default(true) }}"
+    stop_cassandra: "{{ stop_cassandra_for_restore | default(true) }}"
+
+  vars_prompt:
+    - name: backup_timestamp
+      prompt: "Enter backup timestamp to restore (e.g., 2024-01-15_1430)"
+      private: no
+
+    - name: confirm_restore
+      prompt: "Are you sure you want to restore? This will stop Cassandra! Type 'yes' to continue"
+      private: no
+
+  pre_tasks:
+    - name: Verify confirmation
+      fail:
+        msg: "Restore cancelled"
+      when: confirm_restore != 'yes'
+
+    - name: Check if backup exists
+      stat:
+        path: "{{ backup_base_dir }}/{{ backup_timestamp }}"
+      register: backup_dir_check
+
+    - name: Fail if backup doesn't exist
+      fail:
+        msg: "Backup directory {{ backup_base_dir }}/{{ backup_timestamp }} does not exist"
+      when: not backup_dir_check.stat.exists
+
+    - name: Read backup metadata
+      slurp:
+        src: "{{ backup_base_dir }}/{{ backup_timestamp }}/metadata.yml"
+      register: backup_metadata_raw
+
+    - name: Parse backup metadata
+      set_fact:
+        backup_metadata: "{{ backup_metadata_raw.content | b64decode | from_yaml }}"
+
+    - name: Display backup information
+      debug:
+        msg: |
+          Backup Information:
+          - Timestamp: {{ backup_metadata.backup_timestamp }}
+          - Type: {{ backup_metadata.backup_type }}
+          - Node: {{ backup_metadata.node }}
+          - Keyspaces: {{ backup_metadata.keyspaces }}
+
+  tasks:
+    - name: Create restore working directory
+      file:
+        path: "/tmp/cassandra_restore_{{ backup_timestamp }}"
+        state: directory
+        owner: "{{ cassandra_user }}"
+        group: "{{ cassandra_group }}"
+        mode: '0750'
+
+    - name: Stop Cassandra if required
+      block:
+        - name: Drain node before stopping
+          shell: "{{ cassandra_home }}/bin/nodetool drain"
+          become_user: "{{ cassandra_user }}"
+          ignore_errors: yes
+
+        - name: Stop Cassandra service
+          systemd:
+            name: cassandra
+            state: stopped
+
+        - name: Wait for Cassandra to stop
+          wait_for:
+            port: 9042
+            host: "{{ cassandra_listen_address }}"
+            state: stopped
+            timeout: 60
+
+      when: stop_cassandra
+
+    - name: Clear commitlog and saved_caches
+      block:
+        - name: Remove commitlog files
+          shell: "rm -rf {{ cassandra_commit_log_dir }}/*"
+          
+        - name: Remove saved caches
+          shell: "rm -rf {{ cassandra_saved_caches_dir }}/*"
+
+      when: stop_cassandra
+
+    - name: Extract backup archive
+      unarchive:
+        src: "{{ backup_base_dir }}/{{ backup_timestamp }}/snapshots/{{ inventory_hostname }}_snapshot.tar.gz"
+        dest: "/tmp/cassandra_restore_{{ backup_timestamp }}"
+        remote_src: yes
+        owner: "{{ cassandra_user }}"
+        group: "{{ cassandra_group }}"
+
+    - name: Identify keyspaces to restore
+      set_fact:
+        keyspaces_to_restore: "{{ restore_keyspaces if restore_keyspaces | length > 0 else backup_metadata.keyspaces.split(',') }}"
+
+    - name: Clear existing data for keyspaces
+      shell: |
+        rm -rf {{ cassandra_data_dir }}/data/{{ item }}
+      loop: "{{ keyspaces_to_restore }}"
+      when: stop_cassandra
+
+    - name: Restore snapshot data
+      shell: |
+        # Find all snapshot directories for this keyspace
+        find /tmp/cassandra_restore_{{ backup_timestamp }} -type d -name "{{ item }}" | while read keyspace_dir; do
+          # Find table directories
+          find "$keyspace_dir" -mindepth 1 -maxdepth 1 -type d | while read table_dir; do
+            table_name=$(basename "$table_dir")
+            # Find snapshot data
+            snapshot_dir=$(find "$table_dir" -type d -name "backup_{{ backup_timestamp }}" | head -1)
+            if [ -n "$snapshot_dir" ]; then
+              # Create target directory
+              target_dir="{{ cassandra_data_dir }}/data/{{ item }}/$table_name"
+              mkdir -p "$target_dir"
+              # Copy snapshot files
+              cp -r "$snapshot_dir"/* "$target_dir/"
+              # Fix ownership
+              chown -R {{ cassandra_user }}:{{ cassandra_group }} "$target_dir"
+            fi
+          done
+        done
+      loop: "{{ keyspaces_to_restore }}"
+      become: yes
+
+    - name: Start Cassandra if it was stopped
+      block:
+        - name: Start Cassandra service
+          systemd:
+            name: cassandra
+            state: started
+
+        - name: Wait for Cassandra to start
+          wait_for:
+            port: 9042
+            host: "{{ cassandra_listen_address }}"
+            delay: 30
+            timeout: 300
+
+        - name: Wait for node to join cluster
+          shell: "{{ cassandra_home }}/bin/nodetool status"
+          register: nodetool_status
+          until: "'UN' in nodetool_status.stdout"
+          retries: 30
+          delay: 10
+          become_user: "{{ cassandra_user }}"
+
+      when: stop_cassandra
+
+    - name: Restore schemas if needed
+      block:
+        - name: Check if keyspace exists
+          shell: |
+            {{ cassandra_home }}/bin/cqlsh {{ cassandra_listen_address }} \
+            -e "DESC KEYSPACE {{ item }}" 2>/dev/null || echo "NOT_FOUND"
+          register: keyspace_check
+          loop: "{{ keyspaces_to_restore }}"
+          changed_when: false
+
+        - name: Create missing keyspaces
+          shell: |
+            {{ cassandra_home }}/bin/cqlsh {{ cassandra_listen_address }} \
+            -f {{ backup_base_dir }}/{{ backup_timestamp }}/schema/{{ item.item }}_schema.cql
+          when: "'NOT_FOUND' in item.stdout"
+          loop: "{{ keyspace_check.results }}"
+          become_user: "{{ cassandra_user }}"
+
+    - name: Load SSTables for online restore
+      shell: |
+        # Find all table directories
+        find {{ cassandra_data_dir }}/data/{{ item }} -mindepth 1 -maxdepth 1 -type d | while read table_dir; do
+          {{ cassandra_home }}/bin/nodetool refresh {{ item }} $(basename "$table_dir")
+        done
+      loop: "{{ keyspaces_to_restore }}"
+      become_user: "{{ cassandra_user }}"
+      when: not stop_cassandra
+
+    - name: Run repair if requested
+      shell: |
+        {{ cassandra_home }}/bin/nodetool repair -pr {{ item }}
+      loop: "{{ keyspaces_to_restore }}"
+      become_user: "{{ cassandra_user }}"
+      when: restore_verify
+
+    - name: Verify restore
+      block:
+        - name: Get table count for each keyspace
+          shell: |
+            {{ cassandra_home }}/bin/cqlsh {{ cassandra_listen_address }} \
+            -e "SELECT COUNT(*) FROM system_schema.tables WHERE keyspace_name = '{{ item }}'"
+          register: table_counts
+          loop: "{{ keyspaces_to_restore }}"
+          changed_when: false
+
+        - name: Display verification results
+          debug:
+            msg: "Keyspace {{ item.item }}: {{ item.stdout }}"
+          loop: "{{ table_counts.results }}"
+
+      when: restore_verify
+
+    - name: Clean up restore directory
+      file:
+        path: "/tmp/cassandra_restore_{{ backup_timestamp }}"
+        state: absent
+
+  post_tasks:
+    - name: Display restore summary
+      debug:
+        msg: |
+          Restore completed successfully!
+          - Backup timestamp: {{ backup_timestamp }}
+          - Keyspaces restored: {{ keyspaces_to_restore | join(', ') }}
+          - Node status: {{ 'Started' if stop_cassandra else 'Online restore completed' }}
+          
+          Next steps:
+          1. Verify data integrity
+          2. Run nodetool repair if not done automatically
+          3. Monitor cluster health
+      run_once: true

@@ -1,0 +1,5 @@
+---
+# Test cluster DC1 specific variables
+
+cassandra_dc_name: dc1
+cassandra_prefer_local: true

@@ -1,0 +1,82 @@
+---
+# Rolling restart of AxonOps agents
+
+- name: Rolling restart of AxonOps agents
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  serial: 1
+  
+  vars:
+    restart_delay: "{{ restart_delay_seconds | default(10) }}"
+    
+  tasks:
+    - name: Check current agent status
+      systemd:
+        name: axon-agent
+      register: agent_status
+      ignore_errors: yes
+
+    - name: Display current agent status
+      debug:
+        msg: "Agent on {{ inventory_hostname }}: {{ agent_status.status.ActiveState | default('not installed') }}"
+
+    - name: Restart AxonOps agent
+      systemd:
+        name: axon-agent
+        state: restarted
+        daemon_reload: yes
+      when: agent_status.status.ActiveState is defined
+      register: restart_result
+
+    - name: Wait for agent to start
+      pause:
+        seconds: 5
+      when: restart_result.changed
+
+    - name: Verify agent is running
+      systemd:
+        name: axon-agent
+      register: agent_verify
+      when: restart_result.changed
+
+    - name: Check agent logs for successful connection
+      shell: |
+        timeout 30s tail -f /var/log/axonops/axon-agent.log | grep -q "Connected to AxonOps" && echo "Connected" || echo "Connection timeout"
+      register: connection_check
+      when: restart_result.changed
+      ignore_errors: yes
+
+    - name: Display restart result
+      debug:
+        msg: |
+          Node: {{ inventory_hostname }}
+          Restart: {{ 'Success' if restart_result.changed else 'Skipped' }}
+          Status: {{ agent_verify.status.ActiveState | default('unknown') }}
+          Connection: {{ connection_check.stdout | default('not checked') }}
+      when: agent_status.status.ActiveState is defined
+
+    - name: Wait before next agent restart
+      pause:
+        seconds: "{{ restart_delay }}"
+        prompt: "Waiting {{ restart_delay }} seconds before processing next agent..."
+      when: inventory_hostname != ansible_play_hosts[-1]
+
+  post_tasks:
+    - name: Summary of all agents
+      systemd:
+        name: axon-agent
+      register: final_status
+      ignore_errors: yes
+      delegate_to: "{{ item }}"
+      with_items: "{{ ansible_play_hosts }}"
+      run_once: true
+
+    - name: Display final summary
+      debug:
+        msg: |
+          AxonOps Agents Status Summary:
+          {% for result in final_status.results %}
+          - {{ result.item }}: {{ result.status.ActiveState | default('not installed') }}
+          {% endfor %}
+      run_once: true

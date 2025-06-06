@@ -1,0 +1,89 @@
+---
+# Test connectivity to AxonOps SaaS
+
+- name: Test AxonOps SaaS connectivity
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Test DNS resolution of AxonOps SaaS endpoint
+      command: nslookup {{ axonops_server_host }}
+      register: dns_result
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Display DNS resolution result
+      debug:
+        var: dns_result.stdout_lines
+      when: dns_result.rc == 0
+
+    - name: Test HTTPS connectivity to AxonOps SaaS
+      uri:
+        url: "https://{{ axonops_server_host }}/health"
+        method: GET
+        timeout: 10
+        validate_certs: yes
+      register: https_test
+      ignore_errors: yes
+
+    - name: Display HTTPS connectivity result
+      debug:
+        msg: "HTTPS connectivity to {{ axonops_server_host }}: {{ 'SUCCESS' if https_test.status is defined and https_test.status == 200 else 'FAILED' }}"
+
+    - name: Test port 443 connectivity
+      wait_for:
+        host: "{{ axonops_server_host }}"
+        port: 443
+        timeout: 10
+      register: port_test
+      ignore_errors: yes
+
+    - name: Display port connectivity result
+      debug:
+        msg: "Port 443 connectivity: {{ 'OPEN' if port_test is succeeded else 'BLOCKED' }}"
+
+    - name: Check AxonOps agent configuration
+      stat:
+        path: /etc/axonops/axon-agent.yml
+      register: agent_config
+
+    - name: Verify agent configuration exists
+      debug:
+        msg: "Agent configuration: {{ 'Present' if agent_config.stat.exists else 'Missing' }}"
+
+    - name: Check AxonOps agent service status
+      systemd:
+        name: axon-agent
+      register: agent_service
+      ignore_errors: yes
+
+    - name: Display agent service status
+      debug:
+        msg: "AxonOps agent service: {{ agent_service.status.ActiveState | default('not installed') }}"
+
+    - name: Check agent logs for connection status
+      shell: |
+        if [ -f /var/log/axonops/axon-agent.log ]; then
+          tail -n 20 /var/log/axonops/axon-agent.log | grep -E "(Connected|Error|Failed)"
+        else
+          echo "Log file not found"
+        fi
+      register: agent_logs
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Display recent agent log entries
+      debug:
+        var: agent_logs.stdout_lines
+      when: agent_logs.stdout_lines is defined
+
+    - name: Summary
+      debug:
+        msg: |
+          Connectivity Test Summary:
+          - DNS Resolution: {{ 'PASS' if dns_result.rc == 0 else 'FAIL' }}
+          - HTTPS Connectivity: {{ 'PASS' if https_test.status is defined and https_test.status == 200 else 'FAIL' }}
+          - Port 443: {{ 'OPEN' if port_test is succeeded else 'BLOCKED' }}
+          - Agent Config: {{ 'Present' if agent_config.stat.exists else 'Missing' }}
+          - Agent Service: {{ agent_service.status.ActiveState | default('not installed') }}

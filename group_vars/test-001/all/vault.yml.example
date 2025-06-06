@@ -1,0 +1,10 @@
+---
+# Test cluster 001 vault file - copy to vault.yml and encrypt
+# ansible-vault encrypt group_vars/test-001/all/vault.yml
+
+# AxonOps API credentials for test
+vault_axonops_api_key: "your-test-axonops-api-key"
+vault_axonops_org: "your-organization-name"
+
+# Cassandra credentials (if different from defaults)
+# vault_cassandra_admin_password: "test-password"

@@ -1,0 +1,64 @@
+---
+# AxonOps agent installation tasks
+
+- name: Install required packages for AxonOps repository
+  package:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+
+- name: Add AxonOps repository key
+  apt_key:
+    url: "{{ axonops_apt_key_url }}"
+    state: present
+
+- name: Add AxonOps repository
+  apt_repository:
+    repo: "{{ axonops_apt_repository }}"
+    state: present
+    update_cache: yes
+
+- name: Install AxonOps agent for Cassandra {{ cassandra_version }}
+  apt:
+    name: "{{ axonops_agent_package }}={{ axonops_agent_version }}"
+    state: present
+    update_cache: yes
+
+- name: Create AxonOps group
+  group:
+    name: axonops
+    state: present
+    system: yes
+
+- name: Create AxonOps user
+  user:
+    name: axonops
+    group: axonops
+    groups: "{{ cassandra_group }}"
+    home: /var/lib/axonops
+    shell: /bin/false
+    system: yes
+    createhome: yes
+    comment: "AxonOps monitoring user"
+
+- name: Add cassandra user to axonops group
+  user:
+    name: "{{ cassandra_user }}"
+    groups: axonops
+    append: yes
+
+- name: Create AxonOps directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: axonops
+    group: axonops
+    mode: '0750'
+  loop:
+    - /etc/axonops
+    - /var/log/axonops
+    - /var/lib/axonops

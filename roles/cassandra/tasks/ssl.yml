@@ -1,0 +1,141 @@
+---
+# SSL/TLS configuration tasks for Cassandra
+
+- name: Create SSL directory
+  file:
+    path: "{{ cassandra_config_dir }}/ssl"
+    state: directory
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0750'
+
+- name: Check if keystore exists
+  stat:
+    path: "{{ cassandra_ssl_keystore_path }}"
+  register: keystore_file
+
+- name: Check if truststore exists
+  stat:
+    path: "{{ cassandra_ssl_truststore_path }}"
+  register: truststore_file
+
+- name: Generate self-signed certificate (if keystore doesn't exist)
+  block:
+    - name: Generate private key
+      community.crypto.openssl_privatekey:
+        path: "{{ cassandra_config_dir }}/ssl/cassandra.key"
+        size: 2048
+        owner: "{{ cassandra_user }}"
+        group: "{{ cassandra_group }}"
+        mode: '0600'
+
+    - name: Generate certificate signing request
+      community.crypto.openssl_csr:
+        path: "{{ cassandra_config_dir }}/ssl/cassandra.csr"
+        privatekey_path: "{{ cassandra_config_dir }}/ssl/cassandra.key"
+        common_name: "{{ inventory_hostname }}"
+        organization_name: "{{ cassandra_ssl_org_name | default('Cassandra Cluster') }}"
+        organizational_unit_name: "{{ cassandra_ssl_org_unit | default('IT') }}"
+        country_name: "{{ cassandra_ssl_country | default('US') }}"
+        state_or_province_name: "{{ cassandra_ssl_state | default('CA') }}"
+        locality_name: "{{ cassandra_ssl_locality | default('San Francisco') }}"
+        owner: "{{ cassandra_user }}"
+        group: "{{ cassandra_group }}"
+        mode: '0644'
+
+    - name: Generate self-signed certificate
+      community.crypto.x509_certificate:
+        path: "{{ cassandra_config_dir }}/ssl/cassandra.crt"
+        privatekey_path: "{{ cassandra_config_dir }}/ssl/cassandra.key"
+        csr_path: "{{ cassandra_config_dir }}/ssl/cassandra.csr"
+        provider: selfsigned
+        selfsigned_not_after: "+3650d"
+        owner: "{{ cassandra_user }}"
+        group: "{{ cassandra_group }}"
+        mode: '0644'
+
+    - name: Create PKCS12 keystore
+      community.general.java_cert:
+        cert_alias: "{{ inventory_hostname }}"
+        cert_path: "{{ cassandra_config_dir }}/ssl/cassandra.crt"
+        private_key_path: "{{ cassandra_config_dir }}/ssl/cassandra.key"
+        keystore_path: "{{ cassandra_ssl_keystore_path }}"
+        keystore_pass: "{{ cassandra_ssl_keystore_password }}"
+        keystore_type: PKCS12
+        keystore_create: yes
+        state: present
+      become: yes
+      become_user: "{{ cassandra_user }}"
+
+  when: not keystore_file.stat.exists and cassandra_ssl_generate_self_signed
+
+- name: Copy provided keystore
+  copy:
+    src: "{{ cassandra_ssl_keystore_source }}"
+    dest: "{{ cassandra_ssl_keystore_path }}"
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0600'
+  when: 
+    - not keystore_file.stat.exists
+    - not cassandra_ssl_generate_self_signed
+    - cassandra_ssl_keystore_source is defined
+
+- name: Copy provided truststore
+  copy:
+    src: "{{ cassandra_ssl_truststore_source }}"
+    dest: "{{ cassandra_ssl_truststore_path }}"
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0600'
+  when:
+    - not truststore_file.stat.exists
+    - cassandra_ssl_truststore_source is defined
+
+- name: Create truststore from cluster certificates
+  block:
+    - name: Fetch certificates from all nodes
+      fetch:
+        src: "{{ cassandra_config_dir }}/ssl/cassandra.crt"
+        dest: "/tmp/cassandra-certs/{{ inventory_hostname }}.crt"
+        flat: yes
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['cassandra'] }}"
+      when: cassandra_ssl_generate_self_signed
+
+    - name: Import certificates into truststore
+      community.general.java_cert:
+        cert_alias: "{{ item | basename | replace('.crt', '') }}"
+        cert_path: "/tmp/cassandra-certs/{{ item | basename }}"
+        keystore_path: "{{ cassandra_ssl_truststore_path }}"
+        keystore_pass: "{{ cassandra_ssl_truststore_password }}"
+        keystore_type: PKCS12
+        keystore_create: yes
+        state: present
+      with_fileglob:
+        - "/tmp/cassandra-certs/*.crt"
+      become: yes
+      become_user: "{{ cassandra_user }}"
+
+    - name: Clean up temporary certificates
+      file:
+        path: "/tmp/cassandra-certs"
+        state: absent
+      delegate_to: localhost
+      run_once: true
+
+  when:
+    - not truststore_file.stat.exists
+    - cassandra_ssl_generate_self_signed
+    - cassandra_ssl_mutual_auth_enabled
+
+- name: Set keystore and truststore permissions
+  file:
+    path: "{{ item }}"
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0600'
+  loop:
+    - "{{ cassandra_ssl_keystore_path }}"
+    - "{{ cassandra_ssl_truststore_path }}"
+  when: item is exists

@@ -1,0 +1,10 @@
+---
+# Global download URLs and versions
+
+# Cassandra download settings
+cassandra_version: "5.0.4"
+cassandra_download_url: "https://dlcdn.apache.org/cassandra/{{ cassandra_version }}/apache-cassandra-{{ cassandra_version }}-bin.tar.gz"
+cassandra_download_checksum_url: "https://dlcdn.apache.org/cassandra/{{ cassandra_version }}/apache-cassandra-{{ cassandra_version }}-bin.tar.gz.sha512"
+
+# AxonOps versions
+axonops_agent_version: "1.0.48"

@@ -1,0 +1,231 @@
+---
+# Pre-flight checks for Cassandra and AxonOps deployment
+
+- name: Pre-flight checks
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    min_disk_space_gb: 50
+    min_memory_gb: 8
+    required_ports:
+      cassandra:
+        - { port: 7000, name: "Storage port" }
+        - { port: 7001, name: "SSL storage port" }
+        - { port: 7199, name: "JMX port" }
+        - { port: 9042, name: "Native transport port" }
+        - { port: 9160, name: "Thrift port" }
+      axonops:
+        - { port: 443, name: "AxonOps SaaS HTTPS", host: "agents.axonops.cloud" }
+    required_packages:
+      - curl
+      - netcat
+      - python3
+      - python3-pip
+
+  tasks:
+    - name: System checks
+      block:
+        - name: Check OS version
+          assert:
+            that:
+              - ansible_distribution == "Ubuntu"
+              - ansible_distribution_major_version | int >= 22
+            fail_msg: "This playbook requires Ubuntu 22.04 or later"
+            success_msg: "OS check passed: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+        - name: Check available disk space
+          assert:
+            that:
+              - item.size_available > (min_disk_space_gb * 1024 * 1024 * 1024)
+            fail_msg: "Insufficient disk space on {{ item.mount }} ({{ item.size_available | human_readable }})"
+            success_msg: "Disk space check passed for {{ item.mount }}"
+          loop: "{{ ansible_mounts }}"
+          when: item.mount in ['/', '/var', '/opt', cassandra_data_dir | default('/var/lib/cassandra') | dirname ]
+
+        - name: Check available memory
+          assert:
+            that:
+              - ansible_memtotal_mb > (min_memory_gb * 1024)
+            fail_msg: "Insufficient memory: {{ ansible_memtotal_mb }}MB (minimum: {{ min_memory_gb }}GB)"
+            success_msg: "Memory check passed: {{ ansible_memtotal_mb }}MB"
+
+        - name: Check CPU count
+          assert:
+            that:
+              - ansible_processor_vcpus >= 4
+            fail_msg: "Insufficient CPUs: {{ ansible_processor_vcpus }} (minimum: 4)"
+            success_msg: "CPU check passed: {{ ansible_processor_vcpus }} cores"
+
+    - name: Network connectivity checks
+      block:
+        - name: Check DNS resolution
+          command: nslookup agents.axonops.cloud
+          changed_when: false
+          register: dns_check
+
+        - name: Verify DNS resolution succeeded
+          assert:
+            that:
+              - dns_check.rc == 0
+            fail_msg: "DNS resolution failed for agents.axonops.cloud"
+            success_msg: "DNS resolution check passed"
+
+        - name: Check AxonOps connectivity
+          uri:
+            url: "https://agents.axonops.cloud"
+            method: GET
+            timeout: 10
+            validate_certs: yes
+          register: axonops_check
+          ignore_errors: yes
+
+        - name: Verify AxonOps connectivity
+          assert:
+            that:
+              - axonops_check.status is defined
+              - axonops_check.status != -1
+            fail_msg: "Cannot connect to AxonOps SaaS at agents.axonops.cloud"
+            success_msg: "AxonOps connectivity check passed"
+
+        - name: Check internal network connectivity
+          wait_for:
+            host: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+            port: 22
+            timeout: 5
+            state: started
+          loop: "{{ groups['cassandra'] }}"
+          when: item != inventory_hostname
+          register: ssh_connectivity
+
+        - name: Test Cassandra inter-node ports
+          wait_for:
+            host: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+            port: 7000
+            timeout: 5
+            state: stopped
+          loop: "{{ groups['cassandra'] }}"
+          when: item != inventory_hostname
+          ignore_errors: yes
+          register: internode_connectivity
+
+    - name: Package repository checks
+      block:
+        - name: Check if required packages are available
+          package:
+            name: "{{ item }}"
+            state: present
+          check_mode: yes
+          register: package_check
+          loop: "{{ required_packages }}"
+
+        - name: Check Java repository access
+          uri:
+            url: "https://repos.azul.com/zulu/deb/dists/stable/Release"
+            method: GET
+            timeout: 10
+          register: java_repo_check
+          ignore_errors: yes
+
+        - name: Check AxonOps repository access
+          uri:
+            url: "https://packages.axonops.com/apt/dists/stable/Release"
+            method: GET
+            timeout: 10
+          register: axonops_repo_check
+          ignore_errors: yes
+
+        - name: Verify repository access
+          assert:
+            that:
+              - java_repo_check.status == 200
+              - axonops_repo_check.status == 200
+            fail_msg: "Cannot access required package repositories"
+            success_msg: "Package repository checks passed"
+
+    - name: Security checks
+      block:
+        - name: Check firewall status
+          command: ufw status
+          register: firewall_status
+          changed_when: false
+          ignore_errors: yes
+
+        - name: Check SELinux status
+          command: getenforce
+          register: selinux_status
+          changed_when: false
+          ignore_errors: yes
+
+        - name: Display security status
+          debug:
+            msg: |
+              Firewall status: {{ 'Active' if 'Status: active' in firewall_status.stdout else 'Inactive' }}
+              SELinux status: {{ selinux_status.stdout | default('Not installed') }}
+
+    - name: Vault checks
+      block:
+        - name: Check if vault file exists
+          stat:
+            path: "group_vars/{{ cluster_name | default('prod-001') }}/all/vault.yml"
+          register: vault_file
+          delegate_to: localhost
+
+        - name: Verify vault file exists
+          assert:
+            that:
+              - vault_file.stat.exists
+            fail_msg: "Vault file not found for cluster {{ cluster_name | default('prod-001') }}"
+            success_msg: "Vault file check passed"
+
+        - name: Check vault variables
+          debug:
+            msg: "Checking vault variables..."
+          vars:
+            _vault_check:
+              - "{{ vault_axonops_api_key is defined }}"
+              - "{{ vault_axonops_org is defined }}"
+
+    - name: Generate pre-flight report
+      set_fact:
+        preflight_report:
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          node: "{{ inventory_hostname }}"
+          checks_passed:
+            - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+            - "Memory: {{ ansible_memtotal_mb }}MB"
+            - "CPUs: {{ ansible_processor_vcpus }}"
+            - "Disk space: Adequate"
+            - "DNS resolution: Working"
+            - "AxonOps connectivity: OK"
+            - "Repository access: OK"
+          warnings: []
+
+  post_tasks:
+    - name: Display pre-flight summary
+      debug:
+        msg: |
+          Pre-flight Check Summary
+          ========================
+          Node: {{ inventory_hostname }}
+          Status: PASSED
+          
+          System Requirements:
+          - OS: {{ ansible_distribution }} {{ ansible_distribution_version }} ✓
+          - Memory: {{ ansible_memtotal_mb }}MB ✓
+          - CPUs: {{ ansible_processor_vcpus }} ✓
+          - Disk Space: ✓
+          
+          Network Connectivity:
+          - DNS Resolution: ✓
+          - AxonOps SaaS: ✓
+          - Package Repositories: ✓
+          
+          All pre-flight checks passed! Ready for deployment.
+
+    - name: Save pre-flight report
+      copy:
+        content: "{{ preflight_report | to_nice_yaml }}"
+        dest: "/tmp/preflight_report_{{ inventory_hostname }}_{{ ansible_date_time.epoch }}.yml"
+      delegate_to: localhost

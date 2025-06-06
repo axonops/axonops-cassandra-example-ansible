@@ -1,0 +1,23 @@
+---
+# Ansible Vault encrypted variables for production cluster
+# Copy this file to vault.yml and encrypt it with:
+# ansible-vault encrypt group_vars/prod-001/all/vault.yml --vault-password-file=.vault_pass
+
+# AxonOps credentials (required)
+vault_axonops_api_key: "your-prod-axonops-api-key"
+vault_axonops_org: "your-organization-name"
+
+# Cassandra passwords (optional - for production use)
+# vault_cassandra_default_password: "strong-password-here"
+# vault_cassandra_admin_password: "another-strong-password"
+
+# SSL/TLS passwords (optional - if using SSL)
+# vault_cassandra_ssl_keystore_password: "keystore-password"
+# vault_cassandra_ssl_truststore_password: "truststore-password"
+
+# Backup encryption (optional)
+# vault_backup_encryption_key: "backup-encryption-key"
+
+# Alert webhook (optional)
+# vault_alert_webhook_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+# vault_alert_email: "ops-team@example.com"

@@ -1,0 +1,25 @@
+---
+# Handlers for Cassandra role
+
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+
+- name: restart cassandra
+  systemd:
+    name: cassandra
+    state: restarted
+  register: cassandra_restart
+  
+- name: wait for cassandra
+  wait_for:
+    port: 9042
+    host: "{{ cassandra_listen_address }}"
+    delay: 10
+    timeout: 120
+  when: cassandra_restart.changed
+
+- name: restart chrony
+  systemd:
+    name: chrony
+    state: restarted

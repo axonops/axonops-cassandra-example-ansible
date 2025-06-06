@@ -1,0 +1,92 @@
+---
+# Check AxonOps agents status
+
+- name: Check AxonOps agents status
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Check AxonOps agent service status
+      systemd:
+        name: axon-agent
+      register: agent_service
+      ignore_errors: yes
+
+    - name: Display agent service status
+      debug:
+        msg: "AxonOps agent on {{ inventory_hostname }}: {{ agent_service.status.ActiveState | default('not installed') }}"
+
+    - name: Check if agent configuration exists
+      stat:
+        path: /etc/axonops/axon-agent.yml
+      register: agent_config
+
+    - name: Verify agent JAR in Cassandra JVM options
+      shell: |
+        grep -q "javaagent.*axon-cassandra.*agent.jar" {{ cassandra_home }}/conf/jvm17-server.options && echo "CONFIGURED" || echo "NOT CONFIGURED"
+      register: jvm_agent
+      changed_when: false
+
+    - name: Check agent log file
+      stat:
+        path: /var/log/axonops/axon-agent.log
+      register: agent_log
+
+    - name: Get recent agent log entries
+      shell: |
+        if [ -f /var/log/axonops/axon-agent.log ]; then
+          echo "=== Last 10 log entries ==="
+          tail -n 10 /var/log/axonops/axon-agent.log
+          echo -e "\n=== Connection status ==="
+          grep -i "connected" /var/log/axonops/axon-agent.log | tail -n 5
+          echo -e "\n=== Recent errors ==="
+          grep -iE "error|failed|exception" /var/log/axonops/axon-agent.log | tail -n 5 || echo "No recent errors"
+        else
+          echo "Agent log file not found"
+        fi
+      register: agent_log_content
+      changed_when: false
+      when: agent_log.stat.exists
+
+    - name: Check agent process
+      shell: |
+        ps aux | grep -v grep | grep axon-agent || echo "No agent process found"
+      register: agent_process
+      changed_when: false
+
+    - name: Verify agent user and group membership
+      shell: |
+        echo "AxonOps user groups:"
+        groups axonops 2>/dev/null || echo "axonops user not found"
+        echo -e "\nCassandra user groups:"
+        groups {{ cassandra_user }} 2>/dev/null || echo "cassandra user not found"
+      register: user_groups
+      changed_when: false
+
+    - name: Check agent package installation
+      shell: |
+        dpkg -l | grep axon-cassandra.*-agent || echo "No AxonOps agent package found"
+      register: agent_package
+      changed_when: false
+      when: ansible_os_family == "Debian"
+
+    - name: Agent status summary
+      debug:
+        msg: |
+          === AxonOps Agent Status for {{ inventory_hostname }} ===
+          Service State: {{ agent_service.status.ActiveState | default('not installed') }}
+          Configuration: {{ 'Present' if agent_config.stat.exists else 'Missing' }}
+          JVM Integration: {{ jvm_agent.stdout }}
+          Log File: {{ 'Present' if agent_log.stat.exists else 'Missing' }}
+          Package: {{ 'Installed' if 'axon-cassandra' in agent_package.stdout else 'Not installed' }}
+
+    - name: Display agent logs if available
+      debug:
+        var: agent_log_content.stdout_lines
+      when: agent_log_content is defined and agent_log_content.stdout_lines is defined
+
+    - name: Display user group memberships
+      debug:
+        var: user_groups.stdout_lines
+      when: user_groups is defined

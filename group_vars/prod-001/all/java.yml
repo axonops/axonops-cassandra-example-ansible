@@ -1,0 +1,6 @@
+---
+# Production cluster Java configuration
+
+# JVM heap settings
+java_heap_size: 8G
+java_new_size: 2G

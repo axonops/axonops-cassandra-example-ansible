@@ -1,0 +1,23 @@
+---
+# Host-specific configuration for test node
+
+# Network configuration
+cassandra_listen_address: "{{ ansible_default_ipv4.address }}"
+cassandra_rpc_address: "{{ ansible_default_ipv4.address }}"
+cassandra_broadcast_rpc_address: "{{ ansible_default_ipv4.address }}"
+
+# Storage configuration
+ssd_device: /dev/nvme1n1
+
+# Cassandra topology
+cassandra_dc: dc1
+cassandra_rack: rack1
+
+# Test cluster has different data paths
+cassandra_data_dir: /data/cassandra
+cassandra_commit_log_dir: /data/cassandra/commitlog
+
+# Seeds for test cluster
+cassandra_seeds_list:
+  - cassandra-test-dc1-rack1-node1
+  - cassandra-test-dc1-rack2-node1

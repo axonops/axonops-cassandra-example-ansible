@@ -1,0 +1,13 @@
+---
+# Handlers for AxonOps agent role
+
+- name: restart axonops-agent
+  systemd:
+    name: axon-agent
+    state: restarted
+    daemon_reload: yes
+
+- name: restart cassandra
+  systemd:
+    name: cassandra
+    state: restarted

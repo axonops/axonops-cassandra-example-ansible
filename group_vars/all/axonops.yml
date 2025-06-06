@@ -1,0 +1,18 @@
+---
+# AxonOps agent configuration
+
+# AxonOps server connection
+axonops_server_host: agents.axonops.cloud
+axonops_tls_mode: https
+
+# Agent settings
+axonops_agent_log_level: INFO
+axonops_agent_log_file: /var/log/axonops/axon-agent.log
+
+# Repository settings
+axonops_apt_repository: "deb [arch=amd64] https://packages.axonops.com/apt/ stable main"
+axonops_apt_key_url: "https://packages.axonops.com/apt/repo-signing-key-0x9E112956C7E1A4B3.gpg"
+
+# Credentials (from vault)
+axonops_org: "{{ vault_axonops_org }}"
+axonops_api_key: "{{ vault_axonops_api_key }}"

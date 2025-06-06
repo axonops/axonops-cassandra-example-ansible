@@ -1,0 +1,44 @@
+---
+# Create Cassandra user and directories
+
+- name: Create Cassandra group
+  group:
+    name: "{{ cassandra_group }}"
+    state: present
+    system: yes
+
+- name: Create Cassandra user
+  user:
+    name: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    home: "{{ cassandra_data_dir }}"
+    shell: /bin/bash
+    system: yes
+    createhome: no
+    comment: "Cassandra database user"
+
+- name: Create Cassandra directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0750'
+  loop:
+    - "{{ cassandra_data_dir }}"
+    - "{{ cassandra_data_dir }}/data"
+    - "{{ cassandra_commit_log_dir }}"
+    - "{{ cassandra_saved_caches_dir }}"
+    - "{{ cassandra_hints_dir }}"
+    - "{{ cassandra_log_dir }}"
+    - /opt/cassandra
+    - /etc/cassandra
+
+- name: Set proper umask for Cassandra user
+  lineinfile:
+    path: /home/{{ cassandra_user }}/.bashrc
+    line: 'umask 0027'
+    create: yes
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0640'

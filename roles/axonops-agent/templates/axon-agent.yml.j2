@@ -1,0 +1,27 @@
+# {{ ansible_managed }}
+# AxonOps Agent Configuration
+
+axon-server:
+  hosts: "{{ axonops_server_host }}"
+
+axon-agent:
+  key: "{{ axonops_api_key }}"
+  org: "{{ axonops_org }}"
+
+# TLS Configuration
+tls:
+  mode: "https"
+
+# Agent identification
+agent:
+  name: "{{ inventory_hostname }}"
+  
+# Cassandra connection settings
+cassandra:
+  host: "{{ cassandra_listen_address }}"
+  port: 9042
+  
+# Logging configuration
+logging:
+  level: INFO
+  file: /var/log/axonops/axon-agent.log

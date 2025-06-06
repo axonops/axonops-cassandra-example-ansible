@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+# Limits configuration for Cassandra
+
+{{ cassandra_user }} - memlock unlimited
+{{ cassandra_user }} - nofile 100000
+{{ cassandra_user }} - nproc 32768
+{{ cassandra_user }} - as unlimited

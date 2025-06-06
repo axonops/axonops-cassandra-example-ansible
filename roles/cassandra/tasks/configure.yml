@@ -1,0 +1,116 @@
+---
+# Cassandra configuration tasks
+
+- name: Determine datacenter and rack from inventory structure
+  set_fact:
+    cassandra_dc: "{{ group_names | select('match', '^dc[0-9]+$') | first }}"
+    cassandra_rack: "{{ group_names | select('match', '^dc[0-9]+_rack[0-9]+$') | first | regex_replace('^dc[0-9]+_', '') }}"
+  when: cassandra_dc is not defined or cassandra_rack is not defined
+
+- name: Set listen address from interface if specified
+  set_fact:
+    cassandra_listen_address: "{{ hostvars[inventory_hostname]['ansible_' + cassandra_listen_interface]['ipv4']['address'] }}"
+  when: cassandra_listen_interface is defined and cassandra_listen_interface
+
+- name: Set RPC address from interface if specified
+  set_fact:
+    cassandra_rpc_address: "{{ hostvars[inventory_hostname]['ansible_' + cassandra_rpc_interface]['ipv4']['address'] }}"
+  when: cassandra_rpc_interface is defined and cassandra_rpc_interface
+
+- name: Generate seeds list if not defined
+  block:
+    - name: Identify seed nodes from inventory
+      set_fact:
+        cassandra_seeds_list: >-
+          {%- set seeds = [] -%}
+          {%- for dc in groups.keys() | select('match', '^dc[0-9]+$') | sort -%}
+            {%- set dc_racks = groups.keys() | select('match', '^' + dc + '_rack[0-9]+$') | sort -%}
+            {%- set seed_count = 0 -%}
+            {%- for rack in dc_racks if seed_count < 2 -%}
+              {%- for host in groups[rack] if seed_count < 2 -%}
+                {%- if seeds.append(host) -%}{%- endif -%}
+                {%- set seed_count = seed_count + 1 -%}
+              {%- endfor -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ seeds }}
+  when: cassandra_seeds_list is not defined
+
+- name: Convert seed hostnames to IPs
+  set_fact:
+    seeds_list: >-
+      {%- set seed_ips = [] -%}
+      {%- for seed in cassandra_seeds_list -%}
+        {%- if hostvars[seed]['cassandra_listen_address'] is defined -%}
+          {%- if seed_ips.append(hostvars[seed]['cassandra_listen_address']) -%}{%- endif -%}
+        {%- else -%}
+          {%- if seed_ips.append(hostvars[seed]['ansible_default_ipv4']['address']) -%}{%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ seed_ips | join(',') }}
+
+- name: Configure cassandra.yaml
+  template:
+    src: cassandra5.0.4/cassandra.yaml.j2
+    dest: "{{ cassandra_home }}/conf/cassandra.yaml"
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0640'
+    backup: yes
+  notify: restart cassandra
+
+- name: Configure cassandra-rackdc.properties
+  template:
+    src: cassandra5.0.4/cassandra-rackdc.properties.j2
+    dest: "{{ cassandra_home }}/conf/cassandra-rackdc.properties"
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0640'
+    backup: yes
+  notify: restart cassandra
+
+- name: Configure JVM options for server
+  template:
+    src: cassandra5.0.4/jvm17-server.options.j2
+    dest: "{{ cassandra_home }}/conf/jvm17-server.options"
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0640'
+    backup: yes
+  notify: restart cassandra
+
+- name: Configure JVM options for clients
+  template:
+    src: cassandra5.0.4/jvm17-clients.options.j2
+    dest: "{{ cassandra_home }}/conf/jvm17-clients.options"
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0640'
+    backup: yes
+
+- name: Configure logback.xml
+  template:
+    src: cassandra5.0.4/logback.xml.j2
+    dest: "{{ cassandra_home }}/conf/logback.xml"
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0640'
+    backup: yes
+  notify: restart cassandra
+
+- name: Configure cassandra-env.sh
+  template:
+    src: cassandra5.0.4/cassandra-env.sh.j2
+    dest: "{{ cassandra_home }}/conf/cassandra-env.sh"
+    owner: "{{ cassandra_user }}"
+    group: "{{ cassandra_group }}"
+    mode: '0750'
+    backup: yes
+  notify: restart cassandra
+
+- name: Create symlink for configuration in /etc
+  file:
+    src: "{{ cassandra_home }}/conf"
+    dest: /etc/cassandra
+    state: link
+    force: yes

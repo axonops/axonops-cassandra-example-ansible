@@ -1,0 +1,12 @@
+---
+# Default variables for AxonOps agent role
+# These can be overridden at group or host level
+
+# Agent package settings
+axonops_agent_package: "axon-agent"
+axonops_agent_version: "*"  # Latest version
+
+# Service settings
+axonops_agent_service_name: "axon-agent"
+axonops_agent_service_enabled: yes
+axonops_agent_service_state: started

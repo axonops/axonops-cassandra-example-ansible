@@ -1,0 +1,249 @@
+---
+# Playbook to tune Cassandra performance based on hardware and workload
+
+- name: Tune Cassandra performance
+  hosts: cassandra
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Workload profiles
+    workload_profiles:
+      balanced:
+        concurrent_reads: 32
+        concurrent_writes: 32
+        concurrent_compactors: 2
+        compaction_throughput: "64MiB/s"
+        memtable_flush_writers: 2
+      read_heavy:
+        concurrent_reads: 64
+        concurrent_writes: 32
+        concurrent_compactors: 4
+        compaction_throughput: "128MiB/s"
+        memtable_flush_writers: 2
+      write_heavy:
+        concurrent_reads: 32
+        concurrent_writes: 64
+        concurrent_compactors: 4
+        compaction_throughput: "0MiB/s"  # Unlimited
+        memtable_flush_writers: 4
+      analytics:
+        concurrent_reads: 128
+        concurrent_writes: 32
+        concurrent_compactors: 4
+        compaction_throughput: "64MiB/s"
+        memtable_flush_writers: 2
+    
+    # Default profile
+    workload_profile: "{{ cassandra_workload_profile | default('balanced') }}"
+    
+    # Auto-tune based on hardware
+    auto_tune: "{{ cassandra_auto_tune | default(true) }}"
+
+  tasks:
+    - name: Analyze hardware capabilities
+      block:
+        - name: Get CPU information
+          set_fact:
+            cpu_cores: "{{ ansible_processor_vcpus }}"
+            numa_nodes: "{{ ansible_processor_count }}"
+
+        - name: Get memory information
+          set_fact:
+            total_memory_gb: "{{ (ansible_memtotal_mb / 1024) | round(0) | int }}"
+            available_memory_gb: "{{ (ansible_memory_mb.real.free / 1024) | round(0) | int }}"
+
+        - name: Get disk information
+          shell: |
+            lsblk -d -o NAME,ROTA | grep -E "nvme|sd" | grep " 0$" | wc -l
+          register: ssd_count
+          changed_when: false
+
+        - name: Detect disk type
+          set_fact:
+            disk_type: "{{ 'ssd' if ssd_count.stdout | int > 0 else 'spinning' }}"
+
+        - name: Display hardware analysis
+          debug:
+            msg: |
+              Hardware Analysis:
+              - CPU Cores: {{ cpu_cores }}
+              - NUMA Nodes: {{ numa_nodes }}
+              - Total Memory: {{ total_memory_gb }}GB
+              - Disk Type: {{ disk_type }}
+
+    - name: Calculate optimal settings
+      when: auto_tune
+      block:
+        - name: Calculate heap size
+          set_fact:
+            optimal_heap_size: |
+              {% set heap_gb = [8, [total_memory_gb // 4, 31] | min] | max %}
+              {{ heap_gb }}G
+
+        - name: Calculate concurrent operations based on CPU
+          set_fact:
+            optimal_concurrent_reads: "{{ [16, cpu_cores | int * 8, 128] | sort | list[1] }}"
+            optimal_concurrent_writes: "{{ [8, cpu_cores | int * 8, 128] | sort | list[1] }}"
+            optimal_concurrent_compactors: "{{ [1, cpu_cores | int // 2, 8] | sort | list[1] }}"
+
+        - name: Calculate memtable settings
+          set_fact:
+            optimal_memtable_heap_space: "{{ (optimal_heap_size | regex_replace('G', '') | int * 1024 // 4) }}MiB"
+            optimal_memtable_offheap_space: "{{ (optimal_heap_size | regex_replace('G', '') | int * 1024 // 4) }}MiB"
+
+    - name: Apply workload profile
+      set_fact:
+        tuning_parameters: "{{ workload_profiles[workload_profile] }}"
+
+    - name: Override with optimal settings if auto-tuning
+      when: auto_tune
+      set_fact:
+        tuning_parameters: "{{ tuning_parameters | combine({
+          'concurrent_reads': optimal_concurrent_reads | int,
+          'concurrent_writes': optimal_concurrent_writes | int,
+          'concurrent_compactors': optimal_concurrent_compactors | int
+        }) }}"
+
+    - name: Runtime performance tuning
+      block:
+        - name: Adjust concurrent reads
+          shell: |
+            {{ cassandra_home }}/bin/nodetool setconcurrentreaders {{ tuning_parameters.concurrent_reads }}
+          become_user: "{{ cassandra_user }}"
+          register: concurrent_reads_result
+
+        - name: Adjust concurrent writes
+          shell: |
+            {{ cassandra_home }}/bin/nodetool setconcurrentwriters {{ tuning_parameters.concurrent_writes }}
+          become_user: "{{ cassandra_user }}"
+          register: concurrent_writes_result
+
+        - name: Adjust concurrent compactors
+          shell: |
+            {{ cassandra_home }}/bin/nodetool setconcurrentcompactors {{ tuning_parameters.concurrent_compactors }}
+          become_user: "{{ cassandra_user }}"
+          register: concurrent_compactors_result
+
+        - name: Adjust compaction throughput
+          shell: |
+            {{ cassandra_home }}/bin/nodetool setcompactionthroughput {{ tuning_parameters.compaction_throughput | regex_replace('MiB/s', '') }}
+          become_user: "{{ cassandra_user }}"
+          register: compaction_throughput_result
+
+    - name: JVM tuning
+      block:
+        - name: Check current heap size
+          shell: |
+            ps aux | grep cassandra | grep -oE "\-Xmx[0-9]+[GM]" | head -1
+          register: current_heap
+          changed_when: false
+
+        - name: Update JVM heap settings if different
+          lineinfile:
+            path: "{{ cassandra_config_dir }}/jvm{{ java_major_version }}-server.options"
+            regexp: "^{{ item.option }}"
+            line: "{{ item.option }}{{ optimal_heap_size }}"
+            backup: yes
+          loop:
+            - { option: "-Xms" }
+            - { option: "-Xmx" }
+          when:
+            - auto_tune
+            - optimal_heap_size is defined
+            - current_heap.stdout != "-Xmx" + optimal_heap_size
+          notify: restart_cassandra
+
+    - name: Update Cassandra configuration
+      when: persist_tuning | default(false)
+      block:
+        - name: Update cassandra.yaml with tuning parameters
+          lineinfile:
+            path: "{{ cassandra_config_dir }}/cassandra.yaml"
+            regexp: "^{{ item.key }}:"
+            line: "{{ item.key }}: {{ item.value }}"
+            backup: yes
+          loop: "{{ tuning_parameters | dict2items }}"
+          notify: restart_cassandra
+
+    - name: Table-level optimizations
+      when: optimize_tables | default(false)
+      block:
+        - name: Get list of user tables
+          shell: |
+            {{ cassandra_home }}/bin/cqlsh {{ cassandra_listen_address }} \
+            -e "SELECT keyspace_name, table_name FROM system_schema.tables WHERE keyspace_name NOT LIKE 'system%'"
+          register: user_tables
+          changed_when: false
+          become_user: "{{ cassandra_user }}"
+
+        - name: Analyze table access patterns
+          shell: |
+            {{ cassandra_home }}/bin/nodetool tablehistograms {{ item.split('.')[0] }} {{ item.split('.')[1] }}
+          loop: "{{ user_tables.stdout_lines[2:-2] }}"
+          register: table_histograms
+          become_user: "{{ cassandra_user }}"
+          when: user_tables.stdout_lines | length > 4
+
+    - name: Network optimization
+      block:
+        - name: Optimize network settings for streaming
+          shell: |
+            {{ cassandra_home }}/bin/nodetool setstreamthroughput {{ stream_throughput | default(200) }}
+          become_user: "{{ cassandra_user }}"
+
+        - name: Optimize inter-DC streaming
+          shell: |
+            {{ cassandra_home }}/bin/nodetool setinterdcstreamthroughput {{ inter_dc_stream_throughput | default(200) }}
+          become_user: "{{ cassandra_user }}"
+
+    - name: Generate tuning report
+      set_fact:
+        tuning_report:
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          node: "{{ inventory_hostname }}"
+          hardware:
+            cpu_cores: "{{ cpu_cores }}"
+            memory_gb: "{{ total_memory_gb }}"
+            disk_type: "{{ disk_type }}"
+          workload_profile: "{{ workload_profile }}"
+          applied_settings: "{{ tuning_parameters }}"
+          heap_size: "{{ optimal_heap_size | default('not changed') }}"
+          auto_tuned: "{{ auto_tune }}"
+
+    - name: Save tuning report
+      copy:
+        content: "{{ tuning_report | to_nice_yaml }}"
+        dest: "/tmp/tuning_report_{{ inventory_hostname }}_{{ ansible_date_time.epoch }}.yml"
+      delegate_to: localhost
+
+  handlers:
+    - name: restart_cassandra
+      systemd:
+        name: cassandra
+        state: restarted
+      when: restart_on_config_change | default(false)
+
+  post_tasks:
+    - name: Display tuning summary
+      debug:
+        msg: |
+          Performance Tuning Summary
+          ==========================
+          Node: {{ inventory_hostname }}
+          Workload Profile: {{ workload_profile }}
+          
+          Applied Settings:
+          - Concurrent Reads: {{ tuning_parameters.concurrent_reads }}
+          - Concurrent Writes: {{ tuning_parameters.concurrent_writes }}
+          - Concurrent Compactors: {{ tuning_parameters.concurrent_compactors }}
+          - Compaction Throughput: {{ tuning_parameters.compaction_throughput }}
+          
+          {% if auto_tune %}
+          Auto-tuned based on:
+          - CPU Cores: {{ cpu_cores }}
+          - Memory: {{ total_memory_gb }}GB
+          - Disk Type: {{ disk_type }}
+          {% endif %}
+          
+          Note: Some changes may require a restart to take effect.

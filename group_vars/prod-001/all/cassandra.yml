@@ -1,0 +1,19 @@
+---
+# Production cluster Cassandra configuration
+
+# Cluster identification
+cassandra_cluster_name: "Production Cluster 001"
+
+# Authentication
+cassandra_authenticator: PasswordAuthenticator
+cassandra_authorizer: CassandraAuthorizer
+
+# Performance settings
+cassandra_concurrent_reads: 32
+cassandra_concurrent_writes: 32
+cassandra_concurrent_counter_writes: 32
+cassandra_concurrent_materialized_view_writes: 32
+
+# Directories (if different from defaults)
+# cassandra_data_dir: /data/cassandra
+# cassandra_commit_log_dir: /commitlog/cassandra
